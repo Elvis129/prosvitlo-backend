@@ -5,3 +5,6 @@
 !addresses_example.json
 !.gitignore
 !README.md
+
+# Ігноруємо великі локальні файли (дані завантажуються з GitHub)
+addresses_hierarchical.json
