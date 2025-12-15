@@ -1,0 +1,28 @@
+# FastAPI and web server
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.0
+
+# Data validation and settings
+pydantic==2.10.0
+pydantic-settings==2.6.0
+python-dotenv==1.0.1
+
+# Web scraping
+beautifulsoup4==4.12.3
+requests==2.31.0
+lxml==5.1.0
+selenium==4.27.1
+webdriver-manager==4.0.2
+
+# Scheduling
+apscheduler==3.10.4
+
+# Firebase push notifications
+firebase-admin==6.4.0
+
+# Additional utilities
+python-multipart==0.0.6
