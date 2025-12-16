@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ProСвітло"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
+    PORT: int = 8000  # Порт для запуску (8080 на Fly.io)
     
     # Database
     DATABASE_URL: str = "sqlite:///./prosvitlo.db"
