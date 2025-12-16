@@ -642,22 +642,25 @@ def start_scheduler():
     - Сповіщення за 5 хв перевіряються кожні 5 хвилин (не кожну хвилину!)
     - Дані перезаписуються ТІЛЬКИ якщо змінились (хеш-перевірка)
     """
-    # Виконуємо одразу при старті
-    update_schedules()
-    update_emergency_outages()
-    update_planned_outages()
+    # Не виконуємо одразу при старті - дозволяємо uvicorn швидко стартувати
+    # Перше оновлення відбудеться через 10 секунд після запуску
+    from datetime import datetime, timedelta
+    start_time = datetime.now() + timedelta(seconds=10)
     
-    # ⭐ Графіки - кожні 5 хвилин
-    scheduler.add_job(update_schedules, 'interval', minutes=5, id='schedules')
+    # ⭐ Графіки - перший запуск через 10с, потім кожні 5 хвилин
+    scheduler.add_job(update_schedules, 'interval', minutes=5, id='schedules', next_run_time=start_time)
     
-    # ⭐ Аварійні - кожні 5 хвилин
-    scheduler.add_job(update_emergency_outages, 'interval', minutes=5, id='emergency')
+    # ⭐ Аварійні - перший запуск через 15с, потім кожні 5 хвилин
+    scheduler.add_job(update_emergency_outages, 'interval', minutes=5, id='emergency', 
+                     next_run_time=start_time + timedelta(seconds=5))
     
-    # ⭐ Оголошення з сайту - кожні 5 хвилин
-    scheduler.add_job(check_and_notify_announcements, 'interval', minutes=5, id='announcements')
+    # ⭐ Оголошення з сайту - перший запуск через 20с, потім кожні 5 хвилин
+    scheduler.add_job(check_and_notify_announcements, 'interval', minutes=5, id='announcements',
+                     next_run_time=start_time + timedelta(seconds=10))
     
-    # ⭐ Планові - ТІЛЬКИ 1 раз на день о 9:00
+    # ⭐ Планові - перший запуск через 25с, потім ТІЛЬКИ 1 раз на день о 9:00
     scheduler.add_job(update_planned_outages, 'cron', hour=9, minute=0, id='planned')
+    scheduler.add_job(update_planned_outages, 'date', run_date=start_time + timedelta(seconds=15), id='planned_initial')
     
     # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - кожні 5 хвилин
     scheduler.add_job(check_upcoming_outages_and_notify, 'interval', minutes=5, id='notifications')
