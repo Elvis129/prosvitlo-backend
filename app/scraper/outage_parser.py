@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import List, Dict, Optional
 import logging
+from app.scraper.page_cache import has_page_changed
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,12 @@ def parse_outages(rem_id: int, type_id: int, date_range: str = "06.12.2025 - 11.
     try:
         response = requests.post(url, data=data, timeout=30)
         response.raise_for_status()
+        
+        # ⚡ ОПТИМІЗАЦІЯ: Перевіряємо чи змінилася сторінка перед парсингом
+        page_key = f"outages_rem{rem_id}_type{type_id}"
+        if not has_page_changed(page_key, response.text):
+            # Сторінка не змінилася - повертаємо None як сигнал не робити нічого
+            return None
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -202,10 +209,19 @@ def fetch_all_emergency_outages() -> List[Dict]:
     Витягує всі аварійні відключення для всіх РЕМів
     """
     all_outages = []
+    all_unchanged = True  # Флаг чи всі сторінки без змін
     
     for rem_id in REM_MAP.keys():
         outages = parse_outages(rem_id, type_id=1)
+        if outages is None:
+            # Сторінка не змінилася, пропускаємо
+            continue
+        all_unchanged = False
         all_outages.extend(outages)
+    
+    if all_unchanged:
+        logger.info("✓ Всі сторінки аварійних відключень без змін")
+        return None  # Сигнал що нічого не змінилося
     
     logger.info(f"Загалом спарсено {len(all_outages)} аварійних відключень")
     return all_outages
@@ -226,10 +242,19 @@ def fetch_all_planned_outages(date_range: str = None) -> List[Dict]:
         date_range = f"{today.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
     
     all_outages = []
+    all_unchanged = True  # Флаг чи всі сторінки без змін
     
     for rem_id in REM_MAP.keys():
         outages = parse_outages(rem_id, type_id=2, date_range=date_range)
+        if outages is None:
+            # Сторінка не змінилася, пропускаємо
+            continue
+        all_unchanged = False
         all_outages.extend(outages)
+    
+    if all_unchanged:
+        logger.info("✓ Всі сторінки планових відключень без змін")
+        return None  # Сигнал що нічого не змінилося
     
     logger.info(f"Загалом спарсено {len(all_outages)} планових відключень")
     return all_outages

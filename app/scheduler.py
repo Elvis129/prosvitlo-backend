@@ -223,14 +223,20 @@ def update_schedules():
 
 def update_emergency_outages():
     """
-    Оновлює аварійні відключення кожні 5 хвилин
+    Оновлює аварійні відключення кожну годину
     Додає/видаляє ТІЛЬКИ ті що змінилися (перевірка по хешу)
+    Якщо сторінки не змінилися - взагалі не парсить
     """
     db: Session = SessionLocal()
     try:
         logger.info("Початок оновлення аварійних відключень...")
         
         outages = fetch_all_emergency_outages()
+        
+        # ⚡ ОПТИМІЗАЦІЯ: Якщо None - сторінки не змінилися, нічого не робимо
+        if outages is None:
+            logger.info("✓ Аварійні відключення: сторінки без змін")
+            return
         
         if not outages:
             crud_outages.clear_all_active_emergency_outages(db)
@@ -304,12 +310,18 @@ def update_planned_outages():
     """
     Оновлює планові відключення ТІЛЬКИ 1 раз на день о 9:00
     Додає/видаляє ТІЛЬКИ ті що змінилися (перевірка по хешу)
+    Якщо сторінки не змінилися - взагалі не парсить
     """
     db: Session = SessionLocal()
     try:
         logger.info("Початок оновлення планових відключень...")
         
         outages = fetch_all_planned_outages()
+        
+        # ⚡ ОПТИМІЗАЦІЯ: Якщо None - сторінки не змінилися, нічого не робимо
+        if outages is None:
+            logger.info("✓ Планові відключення: сторінки без змін")
+            return
         
         if not outages:
             crud_outages.clear_all_active_planned_outages(db)
@@ -647,26 +659,26 @@ def start_scheduler():
     from datetime import datetime, timedelta
     start_time = datetime.now() + timedelta(seconds=10)
     
-    # ⭐ Графіки - перший запуск через 10с, потім кожні 5 хвилин
-    scheduler.add_job(update_schedules, 'interval', minutes=5, id='schedules', next_run_time=start_time)
+    # ⭐ Графіки - перший запуск через 10с, потім кожну годину
+    scheduler.add_job(update_schedules, 'interval', hours=1, id='schedules', next_run_time=start_time)
     
-    # ⭐ Аварійні - перший запуск через 15с, потім кожні 5 хвилин
-    scheduler.add_job(update_emergency_outages, 'interval', minutes=5, id='emergency', 
+    # ⭐ Аварійні - перший запуск через 15с, потім кожну годину
+    scheduler.add_job(update_emergency_outages, 'interval', hours=1, id='emergency', 
                      next_run_time=start_time + timedelta(seconds=5))
     
-    # ⭐ Оголошення з сайту - перший запуск через 20с, потім кожні 5 хвилин
-    scheduler.add_job(check_and_notify_announcements, 'interval', minutes=5, id='announcements',
+    # ⭐ Оголошення з сайту - перший запуск через 20с, потім кожну годину
+    scheduler.add_job(check_and_notify_announcements, 'interval', hours=1, id='announcements',
                      next_run_time=start_time + timedelta(seconds=10))
     
     # ⭐ Планові - перший запуск через 25с, потім ТІЛЬКИ 1 раз на день о 9:00
     scheduler.add_job(update_planned_outages, 'cron', hour=9, minute=0, id='planned')
     scheduler.add_job(update_planned_outages, 'date', run_date=start_time + timedelta(seconds=15), id='planned_initial')
     
-    # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - кожні 5 хвилин
-    scheduler.add_job(check_upcoming_outages_and_notify, 'interval', minutes=5, id='notifications')
+    # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - кожну годину
+    scheduler.add_job(check_upcoming_outages_and_notify, 'interval', hours=1, id='notifications')
     
-    # Очищення старих відключень - кожну годину
-    scheduler.add_job(cleanup_old_outages, 'interval', hours=1, id='cleanup_outages')
+    # Очищення старих відключень - раз на добу о 2:00
+    scheduler.add_job(cleanup_old_outages, 'cron', hour=2, minute=0, id='cleanup_outages')
     
     # Очищення старих повідомлень - щодня о 3:00
     scheduler.add_job(cleanup_old_notifications_job, 'cron', hour=3, minute=0, id='cleanup_notifications')
@@ -674,12 +686,12 @@ def start_scheduler():
     scheduler.start()
     logger.info("=" * 60)
     logger.info("✅ Планувальник запущено:")
-    logger.info("  �� Графіки: кожні 5 хвилин")
-    logger.info("  ⚠️ Аварійні відключення: кожні 5 хвилин")
-    logger.info("  📢 Оголошення з сайту: кожні 5 хвилин")
+    logger.info("  📅 Графіки: кожну годину")
+    logger.info("  ⚠️ Аварійні відключення: кожну годину")
+    logger.info("  📢 Оголошення з сайту: кожну годину")
     logger.info("  📋 Планові відключення: щодня о 9:00")
-    logger.info("  🔔 Сповіщення за 5 хв: кожні 5 хвилин")
-    logger.info("  🧹 Очищення відключень: кожну годину")
+    logger.info("  🔔 Сповіщення за 5 хв: кожну годину")
+    logger.info("  🧹 Очищення відключень: щодня о 2:00")
     logger.info("  🧹 Очищення повідомлень: щодня о 3:00")
     logger.info("=" * 60)
 
