@@ -337,3 +337,23 @@ async def cleanup_notifications(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup notifications: {str(e)}")
+
+
+@router.delete("/notifications/clear-all", tags=["Notifications"])
+async def clear_all_notifications(
+    db: Session = Depends(get_db)
+):
+    """
+    Видалення ВСІХ повідомлень з бази даних (для адміністрування)
+    Використовується для очищення тестових повідомлень
+    """
+    try:
+        from app.models import Notification
+        deleted_count = db.query(Notification).delete()
+        db.commit()
+        return {
+            "message": f"All notifications cleared. Deleted {deleted_count} notifications"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to clear notifications: {str(e)}")
