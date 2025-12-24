@@ -8,6 +8,7 @@ from datetime import date
 from pydantic import BaseModel
 import json
 import logging
+import pytz
 
 from app.database import get_db
 from app.services.address_service import get_address_info
@@ -16,6 +17,9 @@ from app import crud_schedules
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Київський часовий пояс
+KYIV_TZ = pytz.timezone('Europe/Kiev')
 
 
 class AddressRequest(BaseModel):
@@ -99,8 +103,10 @@ async def get_batch_status(
     # Поточна година (тільки для сьогодні)
     is_today = target_date == date.today()
     if is_today:
-        now = datetime.now()
+        # Використовуємо київський час
+        now = datetime.now(KYIV_TZ)
         current_hour = now.hour + now.minute / 60.0
+        logger.info(f"Поточний київський час: {now.strftime('%H:%M')}, час в годинах: {current_hour:.2f}")
     else:
         current_hour = -1
     

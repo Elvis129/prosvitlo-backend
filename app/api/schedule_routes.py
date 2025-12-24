@@ -7,10 +7,14 @@ from typing import List, Optional
 from datetime import datetime, date, timedelta
 from pydantic import BaseModel
 import json
+import pytz
 
 from app.database import get_db
 from app.scraper.schedule_parser import fetch_schedule_images, parse_queue_schedule
 from app import crud_schedules
+
+# Київський часовий пояс
+KYIV_TZ = pytz.timezone('Europe/Kiev')
 
 router = APIRouter()
 
@@ -164,9 +168,10 @@ async def get_outage_status(
         # Поточна година (тільки для сьогодні)
         is_today = target_date == date.today()
         if is_today:
-            now = datetime.now()
+            # Використовуємо київський час
+            now = datetime.now(KYIV_TZ)
             current_hour = now.hour + now.minute / 60.0
-            logger.info(f"Поточний час: {current_hour:.2f}, інтервали черги {queue}: {user_intervals}")
+            logger.info(f"Поточний київський час: {now.strftime('%H:%M')}, час в годинах: {current_hour:.2f}, інтервали черги {queue}: {user_intervals}")
         else:
             current_hour = -1  # Для майбутніх днів завжди "не зараз"
         
