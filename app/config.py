@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     
     # Scheduler
     SCRAPER_INTERVAL_MINUTES: int = 30
+    # Check interval: 5 for frequent checks (every 5 minutes), 60 for hourly checks
+    CHECK_INTERVAL_MINUTES: int = 60
     
     # Scraper
     HOE_URL: str = "https://hoe.com.ua/page/pogodinni-vidkljuchennja"

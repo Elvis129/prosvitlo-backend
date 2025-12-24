@@ -33,5 +33,8 @@ EXPOSE 8080
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
+# Змінна середовища для інтервалу перевірки (за замовчуванням 60 хвилин)
+ENV CHECK_INTERVAL_MINUTES=60
+
 # Команда запуску (використовуємо змінну PORT з Fly.io)
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

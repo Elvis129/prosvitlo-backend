@@ -648,34 +648,38 @@ def cleanup_old_notifications_job():
 
 def start_scheduler():
     """
-    Запускає планувальник з ПРАВИЛЬНИМИ налаштуваннями:
-    - Сайт парситься кожні 5 хвилин (графіки, аварійні, оголошення)
+    Запускає планувальник з КОНФІГУРОВАНИМИ налаштуваннями:
+    - Сайт парситься з інтервалом CHECK_INTERVAL_MINUTES (5 хв або 60 хв)
     - Планові відключення парсяться 1 раз на день о 9:00
-    - Сповіщення за 5 хв перевіряються кожні 5 хвилин (не кожну хвилину!)
+    - Сповіщення за 5 хв перевіряються з тим самим інтервалом
     - Дані перезаписуються ТІЛЬКИ якщо змінились (хеш-перевірка)
     """
+    from app.config import settings
+    
     # Не виконуємо одразу при старті - дозволяємо uvicorn швидко стартувати
     # Перше оновлення відбудеться через 10 секунд після запуску
     from datetime import datetime, timedelta
     start_time = datetime.now() + timedelta(seconds=10)
     
-    # ⭐ Графіки - перший запуск через 10с, потім кожну годину
-    scheduler.add_job(update_schedules, 'interval', hours=1, id='schedules', next_run_time=start_time)
+    check_interval = settings.CHECK_INTERVAL_MINUTES
     
-    # ⭐ Аварійні - перший запуск через 15с, потім кожну годину
-    scheduler.add_job(update_emergency_outages, 'interval', hours=1, id='emergency', 
+    # ⭐ Графіки - перший запуск через 10с, потім з заданим інтервалом
+    scheduler.add_job(update_schedules, 'interval', minutes=check_interval, id='schedules', next_run_time=start_time)
+    
+    # ⭐ Аварійні - перший запуск через 15с, потім з заданим інтервалом
+    scheduler.add_job(update_emergency_outages, 'interval', minutes=check_interval, id='emergency', 
                      next_run_time=start_time + timedelta(seconds=5))
     
-    # ⭐ Оголошення з сайту - перший запуск через 20с, потім кожну годину
-    scheduler.add_job(check_and_notify_announcements, 'interval', hours=1, id='announcements',
+    # ⭐ Оголошення з сайту - перший запуск через 20с, потім з заданим інтервалом
+    scheduler.add_job(check_and_notify_announcements, 'interval', minutes=check_interval, id='announcements',
                      next_run_time=start_time + timedelta(seconds=10))
     
     # ⭐ Планові - перший запуск через 25с, потім ТІЛЬКИ 1 раз на день о 9:00
     scheduler.add_job(update_planned_outages, 'cron', hour=9, minute=0, id='planned')
     scheduler.add_job(update_planned_outages, 'date', run_date=start_time + timedelta(seconds=15), id='planned_initial')
     
-    # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - кожну годину
-    scheduler.add_job(check_upcoming_outages_and_notify, 'interval', hours=1, id='notifications')
+    # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - з заданим інтервалом
+    scheduler.add_job(check_upcoming_outages_and_notify, 'interval', minutes=check_interval, id='notifications')
     
     # Очищення старих відключень - раз на добу о 2:00
     scheduler.add_job(cleanup_old_outages, 'cron', hour=2, minute=0, id='cleanup_outages')
@@ -686,11 +690,11 @@ def start_scheduler():
     scheduler.start()
     logger.info("=" * 60)
     logger.info("✅ Планувальник запущено:")
-    logger.info("  📅 Графіки: кожну годину")
-    logger.info("  ⚠️ Аварійні відключення: кожну годину")
-    logger.info("  📢 Оголошення з сайту: кожну годину")
+    logger.info(f"  📅 Графіки: кожні {check_interval} хвилин")
+    logger.info(f"  ⚠️ Аварійні відключення: кожні {check_interval} хвилин")
+    logger.info(f"  📢 Оголошення з сайту: кожні {check_interval} хвилин")
     logger.info("  📋 Планові відключення: щодня о 9:00")
-    logger.info("  🔔 Сповіщення за 5 хв: кожну годину")
+    logger.info(f"  🔔 Сповіщення за 5 хв: кожні {check_interval} хвилин")
     logger.info("  🧹 Очищення відключень: щодня о 2:00")
     logger.info("  🧹 Очищення повідомлень: щодня о 3:00")
     logger.info("=" * 60)
