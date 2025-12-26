@@ -148,9 +148,11 @@ def update_schedules():
     """
     Оновлює графіки кожні 5 хвилин
     Перезаписує ТІЛЬКИ якщо дані змінилися (перевірка по хешу)
+    Відправляє повідомлення про НОВІ графіки (нові дати)
     """
     db: Session = SessionLocal()
     schedule_changed = False
+    new_dates_added = []  # Відстежуємо нові дати
     
     try:
         logger.info("Початок оновлення графіків...")
@@ -168,6 +170,8 @@ def update_schedules():
         if not schedules:
             logger.warning("Не вдалося отримати графіки")
             return  # Вийти після cleanup
+        
+        today = date.today()
         
         for schedule_info in schedules:
             schedule_date = schedule_info.get('date')
@@ -187,8 +191,9 @@ def update_schedules():
             
             existing = crud_schedules.get_schedule_by_date(db=db, date_val=schedule_date)
             
-            # ⭐ ПЕРЕВІРКА: якщо графік існує і хеш не змінився - НЕ ПЕРЕЗАПИСУЄМО
+            # ⭐ НОВА ЛОГІКА: відстежуємо нові дати
             if existing:
+                # Графік вже є в БД - перевіряємо чи змінився
                 if existing.content_hash == content_hash:
                     logger.info(f"Графік для {schedule_date} не змінився - пропускаємо")
                     continue
@@ -196,7 +201,12 @@ def update_schedules():
                     schedule_changed = True
                     logger.info(f"Графік для {schedule_date} ЗМІНИВСЯ - оновлюємо")
             else:
+                # Нового графіка немає в БД
                 schedule_changed = True
+                # Якщо це майбутня дата (завтра або пізніше) - відправимо повідомлення
+                if schedule_date >= today:
+                    new_dates_added.append(schedule_date)
+                    logger.info(f"📅 НОВИЙ графік на {schedule_date} буде додано")
             
             parsed_schedule = parse_queue_schedule(recognized_text)
             if not parsed_schedule:
@@ -221,9 +231,13 @@ def update_schedules():
                     content_hash=content_hash
                 )
         
-        # Якщо графік змінився - відправляємо сповіщення
-        if schedule_changed:
-            notify_schedule_update()
+        # Відправляємо сповіщення якщо є НОВІ дати (завтра, післязавтра)
+        if new_dates_added:
+            # Сортуємо дати і беремо найближчу
+            new_dates_added.sort()
+            nearest_date = new_dates_added[0]
+            logger.info(f"🔔 Відправка повідомлення про новий графік на {nearest_date}")
+            notify_schedule_update(nearest_date)
         
         logger.info("Оновлення графіків завершено")
         
@@ -638,8 +652,12 @@ def check_upcoming_outages_and_notify():
         db.close()
 
 
-def notify_schedule_update():
-    """Відправляє push про оновлення графіків"""
+def notify_schedule_update(schedule_date=None):
+    """Відправляє push про оновлення графіків
+    
+    Args:
+        schedule_date: Дата нового графіка (якщо є)
+    """
     from app.services import firebase_service
     from app.services.telegram_service import get_telegram_service
     from app import crud_notifications
@@ -647,8 +665,26 @@ def notify_schedule_update():
     db: Session = SessionLocal()
     try:
         logger.info("📅 Відправка сповіщення про оновлення графіків...")
-        title = "📅 Оновлення графіків"
-        body = "З'явився новий графік відключень"
+        
+        # Формуємо повідомлення залежно від дати
+        if schedule_date:
+            from datetime import date as dt_date
+            today = dt_date.today()
+            
+            if schedule_date == today:
+                date_text = "на сьогодні"
+            elif schedule_date == today + timedelta(days=1):
+                date_text = "на завтра"
+            elif schedule_date == today + timedelta(days=2):
+                date_text = "на післязавтра"
+            else:
+                date_text = f"на {schedule_date.strftime('%d.%m')}"
+            
+            title = "📅 Новий графік відключень"
+            body = f"З'явився графік {date_text}"
+        else:
+            title = "📅 Оновлення графіків"
+            body = "З'явився новий графік відключень"
         
         result = firebase_service.send_to_all_users(
             db=db,
