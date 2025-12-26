@@ -73,7 +73,13 @@ def check_and_notify_announcements():
     
     db: Session = SessionLocal()
     try:
+        logger.info("🔍 Перевіряємо оголошення...")
         announcements = fetch_announcements()
+        
+        if not announcements:
+            logger.info("ℹ️ Нових оголошень не знайдено")
+        else:
+            logger.info(f"📢 Знайдено {len(announcements)} оголошень для перевірки")
         
         for announcement in announcements:
             content_hash = announcement['content_hash']
@@ -115,11 +121,17 @@ def check_and_notify_announcements():
                 # Відправляємо ПОВНИЙ текст в Telegram канал
                 telegram = get_telegram_service()
                 if telegram:
-                    telegram.send_announcement(
+                    telegram_success = telegram.send_announcement(
                         title=title,
                         body=full_body,
                         source=announcement['source']
                     )
+                    if telegram_success:
+                        logger.info(f"✅ Telegram: повідомлення відправлено в канал")
+                    else:
+                        logger.error(f"❌ Telegram: помилка відправки")
+                else:
+                    logger.warning(f"⚠️ Telegram сервіс не ініціалізований")
                 logger.info(f"✅ Відправлено оголошення ВСІМ: {title}")
         
         # Очищаємо старі хеші (залишаємо останні 100)
@@ -439,6 +451,8 @@ def check_upcoming_outages_and_notify():
         current_time = datetime.now()
         target_time = current_time + timedelta(minutes=5)
         
+        logger.info(f"🔔 Перевірка відключень на {target_time.strftime('%H:%M')}...")
+        
         # ========== 1. АВАРІЙНІ ВІДКЛЮЧЕННЯ ==========
         emergency_outages = db.query(EmergencyOutage).filter(
             EmergencyOutage.is_active == True,
@@ -446,12 +460,17 @@ def check_upcoming_outages_and_notify():
             EmergencyOutage.start_time <= target_time
         ).all()
         
+        if emergency_outages:
+            logger.info(f"⚠️ Знайдено {len(emergency_outages)} аварійних відключень")
+        
         for outage in emergency_outages:
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
             title = "⚠️ Аварійне відключення за 5 хвилин"
             body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
+            
+            logger.info(f"📤 Відправка аварійного пушу: {outage.city}, {outage.street}")
             
             for house in outage.house_numbers.split(','):
                 house = house.strip()
@@ -485,6 +504,9 @@ def check_upcoming_outages_and_notify():
                             "house_number": house
                         }]
                     )
+                    logger.info(f"✅ Аварійний push: {result['success']} пристроїв для {outage.city}, {outage.street}, {house}")
+                else:
+                    logger.info(f"ℹ️ Немає користувачів для {outage.city}, {outage.street}, {house}")
         
         # ========== 2. ПЛАНОВІ ВІДКЛЮЧЕННЯ ==========
         planned_outages = db.query(PlannedOutage).filter(
@@ -493,12 +515,17 @@ def check_upcoming_outages_and_notify():
             PlannedOutage.start_time <= target_time
         ).all()
         
+        if planned_outages:
+            logger.info(f"📋 Знайдено {len(planned_outages)} планових відключень")
+        
         for outage in planned_outages:
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
             title = "📋 Планове відключення за 5 хвилин"
             body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
+            
+            logger.info(f"📤 Відправка планового пушу: {outage.city}, {outage.street}")
             
             for house in outage.house_numbers.split(','):
                 house = house.strip()
@@ -532,6 +559,9 @@ def check_upcoming_outages_and_notify():
                             "house_number": house
                         }]
                     )
+                    logger.info(f"✅ Плановий push: {result['success']} пристроїв для {outage.city}, {outage.street}, {house}")
+                else:
+                    logger.info(f"ℹ️ Немає користувачів для {outage.city}, {outage.street}, {house}")
         
         # ========== 3. ВІДКЛЮЧЕННЯ ПО ЧЕРГАХ (1.1, 1.2, etc) ==========
         today = current_time.date()
@@ -545,6 +575,7 @@ def check_upcoming_outages_and_notify():
             # Якщо через 5 хв почнеться нова година з відключеннями
             if hour_key in parsed_data:
                 queues_to_notify = parsed_data[hour_key]
+                logger.info(f"⚡ Знайдено черги для відключення о {hour_key}: {queues_to_notify}")
                 
                 for queue in queues_to_notify:
                     # Знаходимо користувачів з цією чергою
@@ -553,7 +584,10 @@ def check_upcoming_outages_and_notify():
                     ).all()
                     
                     if not user_addresses:
+                        logger.info(f"ℹ️ Немає користувачів для черги {queue}")
                         continue
+                    
+                    logger.info(f"📤 Відправка push для черги {queue} ({len(user_addresses)} користувачів)")
                     
                     device_ids = [ua.device_id for ua in user_addresses]
                     
@@ -563,6 +597,7 @@ def check_upcoming_outages_and_notify():
                     ).all()
                     
                     if not tokens:
+                        logger.info(f"ℹ️ Немає активних пристроїв для черги {queue}")
                         continue
                     
                     fcm_tokens = [token.fcm_token for token in tokens]
@@ -589,7 +624,13 @@ def check_upcoming_outages_and_notify():
                             title=title,
                             body=body
                         )
-                        logger.info(f"✅ Відправлено сповіщення для черги {queue}: {result}")
+                        logger.info(f"✅ Черга {queue}: {result['success']} push відправлено")
+                    else:
+                        logger.info(f"⚠️ Черга {queue}: {result['failed']} помилок")
+            else:
+                logger.debug(f"ℹ️ Немає відключень о {hour_key}")
+        else:
+            logger.debug("ℹ️ Немає графіка на сьогодні")
         
     except Exception as e:
         logger.error(f"Помилка при перевірці відключень: {e}")
@@ -605,6 +646,7 @@ def notify_schedule_update():
     
     db: Session = SessionLocal()
     try:
+        logger.info("📅 Відправка сповіщення про оновлення графіків...")
         title = "📅 Оновлення графіків"
         body = "З'явився новий графік відключень"
         
@@ -623,7 +665,23 @@ def notify_schedule_update():
                 title=title,
                 body=body
             )
-            logger.info(f"✅ Сповіщення про оновлення графіків: {result}")
+            logger.info(f"✅ Push про графіки відправлено: {result}")
+            
+            # Відправляємо в Telegram
+            telegram = get_telegram_service()
+            if telegram:
+                telegram_success = telegram.send_message(
+                    message=f"<b>{title}</b>\n\n{body}",
+                    parse_mode="HTML"
+                )
+                if telegram_success:
+                    logger.info("✅ Telegram: повідомлення про графіки відправлено")
+                else:
+                    logger.error("❌ Telegram: помилка відправки повідомлення про графіки")
+            else:
+                logger.warning("⚠️ Telegram не ініціалізований для відправки про графіки")
+        else:
+            logger.warning(f"⚠️ Жоден push не відправлено (немає активних пристроїв)")
         
     except Exception as e:
         logger.error(f"Помилка при відправці сповіщення: {e}")

@@ -257,15 +257,16 @@ def send_to_all_users(
         ).all()
         
         if not tokens:
-            logger.info("No devices with enabled notifications")
+            logger.warning("⚠️ No devices with enabled notifications found")
             return {'success': 0, 'failed': 0}
         
         fcm_tokens = [token.fcm_token for token in tokens]
         
         # Відправляємо мультикаст повідомлення
+        logger.info(f"📤 Відправка push на {len(fcm_tokens)} пристроїв...")
         result = send_push_to_multiple(fcm_tokens, title, body, data)
         
-        logger.info(f"Sent broadcast notification to {len(fcm_tokens)} devices: {result}")
+        logger.info(f"✅ Broadcast результат: успішно={result['success']}, невдало={result['failed']}")
         return result
     
     except Exception as e:

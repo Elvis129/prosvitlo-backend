@@ -69,14 +69,25 @@ async def lifespan(app: FastAPI):
     
     # Ініціалізація Telegram Bot (опціонально)
     try:
+        logger.info(f"📱 Перевірка Telegram конфігурації:")
+        logger.info(f"  TELEGRAM_ENABLED: {settings.TELEGRAM_ENABLED}")
+        logger.info(f"  TELEGRAM_BOT_TOKEN: {'✓ встановлено' if settings.TELEGRAM_BOT_TOKEN else '✗ відсутній'}")
+        logger.info(f"  TELEGRAM_CHANNEL_ID: {settings.TELEGRAM_CHANNEL_ID if settings.TELEGRAM_CHANNEL_ID else '✗ відсутній'}")
+        
         if settings.TELEGRAM_ENABLED and settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHANNEL_ID:
             init_telegram_service(
                 bot_token=settings.TELEGRAM_BOT_TOKEN,
                 channel_id=settings.TELEGRAM_CHANNEL_ID
             )
-            logger.info("✓ Telegram Bot ініціалізовано")
+            logger.info("✓ Telegram Bot ініціалізовано успішно")
         else:
-            logger.info("ℹ️  Telegram Bot вимкнено (встановіть TELEGRAM_ENABLED=True в .env)")
+            logger.warning("⚠️ Telegram Bot вимкнено або не налаштовано")
+            if not settings.TELEGRAM_ENABLED:
+                logger.info("   → TELEGRAM_ENABLED=False")
+            if not settings.TELEGRAM_BOT_TOKEN:
+                logger.info("   → TELEGRAM_BOT_TOKEN відсутній")
+            if not settings.TELEGRAM_CHANNEL_ID:
+                logger.info("   → TELEGRAM_CHANNEL_ID відсутній")
     except Exception as e:
         logger.error(f"✗ Помилка при ініціалізації Telegram: {e}")
     
