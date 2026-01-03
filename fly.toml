@@ -36,7 +36,7 @@ primary_region = 'ams'
 [[mounts]]
   source = "prosvitlo_static"
   destination = "/data/static"
-  initial_size = "500mb"
+  initial_size = "1gb"
 
 [[vm]]
   memory = '1gb'
