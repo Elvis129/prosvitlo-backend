@@ -105,11 +105,13 @@ def create_notification(
     body: str,
     category: str = 'general',
     data: Optional[dict] = None,
-    addresses: Optional[List[dict]] = None
+    addresses: Optional[List[dict]] = None,
+    device_ids: Optional[List[str]] = None
 ) -> Notification:
     """
     Створює новe повідомлення в історії
     category: 'general', 'outage', 'restored', 'scheduled', 'emergency'
+    device_ids: Список device_id користувачів, яким відправлено повідомлення
     """
     notification = Notification(
         notification_type=notification_type,
@@ -117,7 +119,8 @@ def create_notification(
         title=title,
         body=body,
         data=json.dumps(data) if data else None,
-        addresses=json.dumps(addresses) if addresses else None
+        addresses=json.dumps(addresses) if addresses else None,
+        device_ids=json.dumps(device_ids) if device_ids else None
     )
     
     db.add(notification)
@@ -152,6 +155,44 @@ def get_recent_notifications(
     return notifications
 
 
+def get_user_notifications(
+    db: Session,
+    device_id: str,
+    limit: int = 50
+) -> List[Notification]:
+    """
+    Отримує історію повідомлень для конкретного користувача
+    Включає:
+    - Загальні повідомлення (type='all')
+    - Персональні повідомлення (де device_id є у списку)
+    """
+    five_days_ago = datetime.now(timezone.utc) - timedelta(days=5)
+    
+    # Отримуємо всі повідомлення за останні 5 днів
+    all_notifications = db.query(Notification).filter(
+        Notification.created_at >= five_days_ago
+    ).order_by(
+        Notification.created_at.desc()
+    ).all()
+    
+    # Фільтруємо повідомлення для користувача
+    user_notifications = []
+    for notif in all_notifications:
+        # Загальні повідомлення
+        if notif.notification_type == 'all':
+            user_notifications.append(notif)
+        # Персональні повідомлення
+        elif notif.device_ids:
+            try:
+                device_ids = json.loads(notif.device_ids)
+                if device_id in device_ids:
+                    user_notifications.append(notif)
+            except (json.JSONDecodeError, TypeError):
+                continue
+    
+    return user_notifications[:limit]
+
+
 def cleanup_old_notifications(db: Session) -> int:
     """
     Видаляє повідомлення старіші за 5 днів
@@ -177,7 +218,8 @@ def add_user_address(
     device_id: str,
     city: str,
     street: str,
-    house_number: str
+    house_number: str,
+    queue: Optional[str] = None
 ) -> UserAddress:
     """
     Додає адресу до збережених адрес користувача
@@ -191,7 +233,14 @@ def add_user_address(
     ).first()
     
     if existing:
-        logger.info(f"Address already exists for device {device_id}: {city}, {street}, {house_number}")
+        # Оновлюємо чергу якщо змінилася
+        if queue and existing.queue != queue:
+            existing.queue = queue
+            db.commit()
+            db.refresh(existing)
+            logger.info(f"Updated queue for device {device_id}: {city}, {street}, {house_number} -> {queue}")
+        else:
+            logger.info(f"Address already exists for device {device_id}: {city}, {street}, {house_number}")
         return existing
     
     # Створюємо нову адресу
@@ -199,14 +248,15 @@ def add_user_address(
         device_id=device_id,
         city=city,
         street=street,
-        house_number=house_number
+        house_number=house_number,
+        queue=queue
     )
     
     db.add(user_address)
     db.commit()
     db.refresh(user_address)
     
-    logger.info(f"Added address for device {device_id}: {city}, {street}, {house_number}")
+    logger.info(f"Added address for device {device_id}: {city}, {street}, {house_number} (queue: {queue})")
     return user_address
 
 

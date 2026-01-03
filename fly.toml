@@ -8,6 +8,9 @@ primary_region = 'ams'
 
 [build]
 
+[env]
+  DATABASE_URL = "sqlite:////data/prosvitlo.db"
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -23,6 +26,11 @@ primary_region = 'ams'
     grace_period = "40s"
     method = "GET"
     path = "/health"
+
+[[mounts]]
+  source = "prosvitlo_data"
+  destination = "/data"
+  initial_size = "1gb"
 
 [[vm]]
   memory = '1gb'

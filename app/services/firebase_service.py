@@ -66,8 +66,13 @@ def send_push_notification(
         bool: True якщо відправлено успішно, False інакше
     """
     try:
+        logger.info(f"📤 Відправка одиночного пушу на токен {fcm_token[:20]}...")
+        logger.info(f"📝 Title: {title}")
+        logger.info(f"📝 Body: {body[:100]}..." if len(body) > 100 else f"📝 Body: {body}")
+        
         # Переконуємося що Firebase ініціалізовано
         if _firebase_app is None:
+            logger.info("🔧 Ініціалізація Firebase...")
             initialize_firebase()
         
         # Створюємо повідомлення
@@ -97,11 +102,12 @@ def send_push_notification(
         
         # Відправляємо
         response = messaging.send(message)
-        logger.info(f"Successfully sent message: {response}")
+        logger.info(f"✅ Успішно відправлено повідомлення: {response}")
         return True
     
     except Exception as e:
-        logger.error(f"Error sending push notification: {e}")
+        logger.error(f"❌ Помилка відправки push-повідомлення: {e}")
+        logger.exception("Детальна інформація про помилку:")
         return False
 
 
@@ -115,18 +121,25 @@ def send_push_to_multiple(
     Відправка push-повідомлення на кілька пристроїв
     """
     if not fcm_tokens:
+        logger.warning("⚠️ send_push_to_multiple: Немає токенів для відправки")
         return {'success': 0, 'failed': 0}
     
     try:
+        logger.info(f"🚀 Початок відправки на {len(fcm_tokens)} токенів...")
+        logger.info(f"📝 Title: {title}")
+        logger.info(f"📝 Body: {body[:100]}..." if len(body) > 100 else f"📝 Body: {body}")
+        
         # Переконуємося що Firebase ініціалізовано
         if _firebase_app is None:
+            logger.info("🔧 Ініціалізація Firebase...")
             initialize_firebase()
         
         success_count = 0
         failed_count = 0
         
         # Відправляємо по одному токену
-        for token in fcm_tokens:
+        for idx, token in enumerate(fcm_tokens, 1):
+            logger.info(f"📤 Відправка {idx}/{len(fcm_tokens)} на токен {token[:20]}...")
             message = messaging.Message(
                 notification=messaging.Notification(
                     title=title,
@@ -153,17 +166,19 @@ def send_push_to_multiple(
             )
             
             try:
-                messaging.send(message)
+                response = messaging.send(message)
                 success_count += 1
+                logger.info(f"✅ Успішно відправлено на токен {token[:20]}...: {response}")
             except Exception as e:
-                logger.error(f"Failed to send to token {token[:20]}...: {e}")
+                logger.error(f"❌ Помилка відправки на токен {token[:20]}...: {e}")
                 failed_count += 1
         
-        logger.info(f"Sent broadcast notification: success={success_count}, failed={failed_count}")
+        logger.info(f"✅ Завершено відправку: успішно={success_count}, невдало={failed_count}")
         return {'success': success_count, 'failed': failed_count}
     
     except Exception as e:
-        logger.error(f"Error sending multicast push notification: {e}")
+        logger.error(f"❌ КРИТИЧНА помилка при відправці multicast push: {e}")
+        logger.exception("Детальна інформація про помилку:")
         return {'success': 0, 'failed': len(fcm_tokens)}
 
 
@@ -201,11 +216,16 @@ def send_to_address_users(
             UserAddress.house_number == house_number
         ).all()
         
+        logger.info(f"🔍 Пошук користувачів для адреси: {city}, {street}, {house_number}")
+        logger.info(f"📊 Знайдено адрес: {len(user_addresses)}")
+        
         if not user_addresses:
-            logger.info(f"No users found for address: {city}, {street}, {house_number}")
+            logger.info(f"❌ Не знайдено користувачів для адреси: {city}, {street}, {house_number}")
             return {'success': 0, 'failed': 0}
         
-        device_ids = [ua.device_id for ua in user_addresses]
+        # Дедуплікація: один користувач може мати кілька адрес
+        device_ids = list(set([ua.device_id for ua in user_addresses]))
+        logger.info(f"📱 Device IDs (унікальних): {device_ids[:5]}..." if len(device_ids) > 5 else f"📱 Device IDs: {device_ids}")
         
         # Отримуємо токени для цих пристроїв (тільки з увімкненими сповіщеннями)
         tokens = db.query(DeviceToken).filter(
@@ -213,20 +233,28 @@ def send_to_address_users(
             DeviceToken.notifications_enabled == True
         ).all()
         
+        logger.info(f"🔔 Знайдено токенів з увімкненими сповіщеннями: {len(tokens)}")
+        
         if not tokens:
-            logger.info(f"No devices with enabled notifications for address: {city}, {street}, {house_number}")
+            logger.info(f"❌ Немає пристроїв з увімкненими сповіщеннями для адреси: {city}, {street}, {house_number}")
             return {'success': 0, 'failed': 0}
         
         fcm_tokens = [token.fcm_token for token in tokens]
+        active_device_ids = [token.device_id for token in tokens]
         
         # Відправляємо мультикаст повідомлення
+        logger.info(f"📤 Відправка пушу на {len(fcm_tokens)} пристроїв для адреси {city}, {street}, {house_number}")
         result = send_push_to_multiple(fcm_tokens, title, body, data)
         
-        logger.info(f"Sent targeted notification to {len(fcm_tokens)} devices for address {city}, {street}, {house_number}: {result}")
+        # Додаємо device_ids для збереження в історію
+        result['device_ids'] = active_device_ids
+        
+        logger.info(f"✅ Завершено відправку для адреси {city}, {street}, {house_number}: {result}")
         return result
     
     except Exception as e:
-        logger.error(f"Error sending targeted notification: {e}")
+        logger.error(f"❌ Помилка відправки targeted notification для {city}, {street}, {house_number}: {e}")
+        logger.exception("Детальна інформація про помилку:")
         return {'success': 0, 'failed': 0}
 
 
@@ -252,23 +280,29 @@ def send_to_all_users(
     
     try:
         # Отримуємо всі токени з увімкненими сповіщеннями
+        logger.info(f"🔍 Пошук всіх пристроїв з увімкненими сповіщеннями...")
         tokens = db.query(DeviceToken).filter(
             DeviceToken.notifications_enabled == True
         ).all()
         
+        logger.info(f"📊 Знайдено токенів з увімкненими сповіщеннями: {len(tokens)}")
+        
         if not tokens:
-            logger.warning("⚠️ No devices with enabled notifications found")
+            logger.warning("⚠️ Немає пристроїв з увімкненими сповіщеннями")
             return {'success': 0, 'failed': 0}
         
         fcm_tokens = [token.fcm_token for token in tokens]
         
         # Відправляємо мультикаст повідомлення
-        logger.info(f"📤 Відправка push на {len(fcm_tokens)} пристроїв...")
+        logger.info(f"📤 Відправка broadcast пушу на {len(fcm_tokens)} пристроїв...")
+        logger.info(f"📝 Заголовок: {title}")
+        logger.info(f"📝 Текст: {body[:100]}..." if len(body) > 100 else f"📝 Текст: {body}")
         result = send_push_to_multiple(fcm_tokens, title, body, data)
         
-        logger.info(f"✅ Broadcast результат: успішно={result['success']}, невдало={result['failed']}")
+        logger.info(f"✅ Broadcast завершено: успішно={result['success']}, невдало={result['failed']}")
         return result
     
     except Exception as e:
-        logger.error(f"Error sending broadcast notification: {e}")
+        logger.error(f"❌ Помилка відправки broadcast notification: {e}")
+        logger.exception("Детальна інформація про помилку:")
         return {'success': 0, 'failed': 0}

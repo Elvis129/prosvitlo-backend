@@ -14,9 +14,10 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
     PORT: int = 8000  # Порт для запуску (8080 на Fly.io)
+    BASE_URL: str = "https://prosvitlo-backend.fly.dev"  # Базова URL для формування посилань
     
     # Database
-    DATABASE_URL: str = "sqlite:///./prosvitlo.db"
+    DATABASE_URL: str = "sqlite:////data/prosvitlo.db"  # /data - це Fly.io volume
     
     # Security
     SECRET_KEY: str = "your-secret-key-change-this-in-production"

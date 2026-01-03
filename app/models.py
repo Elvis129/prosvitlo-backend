@@ -122,6 +122,7 @@ class EmergencyOutage(Base):
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)  # Час початку
     end_time = Column(DateTime(timezone=True), nullable=False, index=True)  # Час відновлення
     is_active = Column(Boolean, default=True, index=True)  # Чи активне відключення
+    notification_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)  # Коли відправлено пуш
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     __table_args__ = (
@@ -150,6 +151,7 @@ class PlannedOutage(Base):
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)  # Час початку
     end_time = Column(DateTime(timezone=True), nullable=False, index=True)  # Час відновлення
     is_active = Column(Boolean, default=True, index=True)  # Чи активне відключення
+    notification_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)  # Коли відправлено пуш
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     __table_args__ = (
@@ -194,6 +196,7 @@ class Notification(Base):
     body = Column(Text, nullable=False)
     data = Column(Text, nullable=True)  # JSON з додатковими даними
     addresses = Column(Text, nullable=True)  # JSON масив адрес для type='address'
+    device_ids = Column(Text, nullable=True)  # JSON масив device_id користувачів, яким відправлено
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
     __table_args__ = (
@@ -217,6 +220,7 @@ class UserAddress(Base):
     city = Column(String, nullable=False)
     street = Column(String, nullable=False)
     house_number = Column(String, nullable=False)
+    queue = Column(String, nullable=True, index=True)  # Черга відключення (1.1, 2.1, тощо)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     __table_args__ = (
@@ -226,5 +230,44 @@ class UserAddress(Base):
     
     def __repr__(self):
         return f"<UserAddress(device={self.device_id}, city={self.city}, street={self.street}, house={self.house_number})>"
+
+
+class QueueNotification(Base):
+    """
+    Модель для відстеження відправлених push-повідомлень по чергах
+    Гарантує що кожна черга отримає повідомлення лише один раз в годину
+    """
+    __tablename__ = "queue_notifications"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)  # Дата графіка
+    hour = Column(Integer, nullable=False, index=True)  # Година відключення (0-23)
+    queue = Column(String, nullable=False, index=True)  # Черга (наприклад "1.1", "2.2")
+    notification_sent_at = Column(DateTime(timezone=True), server_default=func.now())  # Коли відправлено
+    
+    __table_args__ = (
+        Index('idx_queue_notification_unique', 'date', 'hour', 'queue', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<QueueNotification(date={self.date}, hour={self.hour}, queue={self.queue})>"
+
+
+class NoScheduleNotificationState(Base):
+    """
+    Модель для відстеження стану повідомлень про відсутність графіка
+    Тримає один запис з налаштуваннями
+    """
+    __tablename__ = "no_schedule_notification_state"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    enabled = Column(Boolean, default=True, nullable=False)  # Чи увімкнені повідомлення
+    consecutive_days_without_schedule = Column(Integer, default=0, nullable=False)  # Лічильник днів без графіка
+    last_check_date = Column(Date, nullable=True)  # Остання дата перевірки
+    last_notification_date = Column(Date, nullable=True)  # Коли останній раз відправляли повідомлення
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    def __repr__(self):
+        return f"<NoScheduleNotificationState(enabled={self.enabled}, days_without={self.consecutive_days_without_schedule})>"
 
 

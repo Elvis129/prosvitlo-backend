@@ -49,6 +49,7 @@ class UserAddressRequest(BaseModel):
     city: str
     street: str
     house_number: str
+    queue: Optional[str] = None  # Черга відключення
 
 
 class UserAddressResponse(BaseModel):
@@ -58,6 +59,7 @@ class UserAddressResponse(BaseModel):
     city: str
     street: str
     house_number: str
+    queue: Optional[str] = None
     created_at: datetime
     
     class Config:
@@ -73,6 +75,7 @@ class NotificationResponse(BaseModel):
     body: str
     data: Optional[str] = None
     addresses: Optional[str] = None
+    device_ids: Optional[str] = None
     created_at: datetime
     
     @field_serializer('created_at')
@@ -189,14 +192,29 @@ async def add_saved_address(
 ):
     """
     Додавання адреси до збережених адрес користувача
+    queue автоматично визначається з AddressQueue таблиці (якщо не вказано вручну)
     """
     try:
+        # Якщо queue не вказано - шукаємо в AddressQueue
+        queue = request.queue
+        if not queue:
+            from app.models import AddressQueue
+            address_queue = db.query(AddressQueue).filter(
+                AddressQueue.city == request.city,
+                AddressQueue.street == request.street,
+                AddressQueue.house_number == request.house_number
+            ).first()
+            
+            if address_queue:
+                queue = address_queue.queue
+        
         user_address = crud_notifications.add_user_address(
             db=db,
             device_id=request.device_id,
             city=request.city,
             street=request.street,
-            house_number=request.house_number
+            house_number=request.house_number,
+            queue=queue
         )
         return user_address
     except Exception as e:
@@ -252,6 +270,26 @@ async def get_notifications(
         db=db,
         limit=limit,
         notification_type=notification_type
+    )
+    return notifications
+
+
+@router.get("/notifications/{device_id}", response_model=List[NotificationResponse], tags=["Notifications"])
+async def get_user_notifications(
+    device_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Отримання історії повідомлень для конкретного користувача
+    Включає:
+    - Загальні повідомлення (для всіх користувачів)
+    - Персональні повідомлення (про відключення за збереженими адресами)
+    """
+    notifications = crud_notifications.get_user_notifications(
+        db=db,
+        device_id=device_id,
+        limit=limit
     )
     return notifications
 
@@ -339,6 +377,47 @@ async def cleanup_notifications(
         raise HTTPException(status_code=500, detail=f"Failed to cleanup notifications: {str(e)}")
 
 
+@router.get("/tokens/stats", tags=["Notifications"])
+async def get_tokens_stats(
+    db: Session = Depends(get_db)
+):
+    """
+    Статистика по токенах для діагностики
+    """
+    try:
+        from app.models import DeviceToken
+        
+        total_tokens = db.query(DeviceToken).count()
+        enabled_tokens = db.query(DeviceToken).filter(
+            DeviceToken.notifications_enabled == True
+        ).count()
+        disabled_tokens = db.query(DeviceToken).filter(
+            DeviceToken.notifications_enabled == False
+        ).count()
+        
+        # Отримуємо кілька прикладів токенів
+        sample_tokens = db.query(DeviceToken).limit(5).all()
+        samples = [
+            {
+                "device_id": token.device_id,
+                "platform": token.platform,
+                "notifications_enabled": token.notifications_enabled,
+                "fcm_token": token.fcm_token[:30] + "..." if len(token.fcm_token) > 30 else token.fcm_token,
+                "created_at": token.created_at.isoformat() if token.created_at else None
+            }
+            for token in sample_tokens
+        ]
+        
+        return {
+            "total_tokens": total_tokens,
+            "enabled_tokens": enabled_tokens,
+            "disabled_tokens": disabled_tokens,
+            "sample_tokens": samples
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+
 @router.delete("/notifications/clear-all", tags=["Notifications"])
 async def clear_all_notifications(
     db: Session = Depends(get_db)
@@ -357,3 +436,127 @@ async def clear_all_notifications(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to clear notifications: {str(e)}")
+
+
+# ============= No Schedule Notification State =============
+
+@router.get("/notifications/no-schedule/state", tags=["Notifications"])
+async def get_no_schedule_state(db: Session = Depends(get_db)):
+    """
+    Отримати стан повідомлень про відсутність графіка
+    """
+    try:
+        from app.models import NoScheduleNotificationState
+        
+        state = db.query(NoScheduleNotificationState).first()
+        
+        if not state:
+            return {
+                "enabled": True,
+                "consecutive_days_without_schedule": 0,
+                "last_check_date": None,
+                "last_notification_date": None,
+                "message": "Стан не ініціалізовано (буде створено автоматично)"
+            }
+        
+        return {
+            "enabled": state.enabled,
+            "consecutive_days_without_schedule": state.consecutive_days_without_schedule,
+            "last_check_date": state.last_check_date.isoformat() if state.last_check_date else None,
+            "last_notification_date": state.last_notification_date.isoformat() if state.last_notification_date else None,
+            "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            "message": "Вимкнено після 5 днів без графіків" if not state.enabled else "Активно"
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get state: {str(e)}")
+
+
+class NoScheduleStateUpdate(BaseModel):
+    """Модель для оновлення стану повідомлень"""
+    enabled: bool
+
+
+@router.post("/notifications/no-schedule/state", tags=["Notifications"])
+async def update_no_schedule_state(
+    update: NoScheduleStateUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Ручне вмикання/вимикання повідомлень про відсутність графіка
+    
+    Параметри:
+    - enabled: true для вмикання, false для вимикання
+    
+    Використання:
+    - Вимкнути коли графіки не публікуються тривалий час
+    - Увімкнути коли графіки знову почали з'являтися
+    """
+    try:
+        from app.models import NoScheduleNotificationState
+        
+        state = db.query(NoScheduleNotificationState).first()
+        
+        if not state:
+            # Створюємо новий стан
+            state = NoScheduleNotificationState(
+                enabled=update.enabled,
+                consecutive_days_without_schedule=0
+            )
+            db.add(state)
+        else:
+            state.enabled = update.enabled
+            
+            # Якщо вмикаємо вручну - скидаємо лічильник
+            if update.enabled:
+                state.consecutive_days_without_schedule = 0
+        
+        db.commit()
+        
+        return {
+            "message": f"Повідомлення {'увімкнено' if update.enabled else 'вимкнено'}",
+            "enabled": state.enabled,
+            "consecutive_days_without_schedule": state.consecutive_days_without_schedule
+        }
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update state: {str(e)}")
+
+
+@router.post("/notifications/no-schedule/reset", tags=["Notifications"])
+async def reset_no_schedule_counter(db: Session = Depends(get_db)):
+    """
+    Скинути лічильник днів без графіка і увімкнути повідомлення
+    
+    Використовується коли:
+    - Графіки знову почали публікуватися
+    - Потрібно вручну скинути стан після тривалої перерви
+    """
+    try:
+        from app.models import NoScheduleNotificationState
+        
+        state = db.query(NoScheduleNotificationState).first()
+        
+        if not state:
+            state = NoScheduleNotificationState(
+                enabled=True,
+                consecutive_days_without_schedule=0
+            )
+            db.add(state)
+        else:
+            state.enabled = True
+            state.consecutive_days_without_schedule = 0
+        
+        db.commit()
+        
+        return {
+            "message": "Лічильник скинуто, повідомлення увімкнено",
+            "enabled": True,
+            "consecutive_days_without_schedule": 0
+        }
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reset: {str(e)}")
+

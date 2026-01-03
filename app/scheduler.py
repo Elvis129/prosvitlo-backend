@@ -185,7 +185,8 @@ def update_schedules():
             local_image_path = download_schedule_image_sync(image_url)
             if local_image_path and local_image_path != image_url:
                 if local_image_path.startswith('/static/'):
-                    image_url = f"http://10.0.2.2:8000{local_image_path}"
+                    from app.config import settings
+                    image_url = f"{settings.BASE_URL}{local_image_path}"
                 else:
                     image_url = local_image_path
             
@@ -238,6 +239,9 @@ def update_schedules():
             nearest_date = new_dates_added[0]
             logger.info(f"🔔 Відправка повідомлення про новий графік на {nearest_date}")
             notify_schedule_update(nearest_date)
+            
+            # ⭐ СКИДАЄМО СТАН "немає графіка" коли додається новий графік
+            reset_no_schedule_state(db)
         
         logger.info("Оновлення графіків завершено")
         
@@ -452,7 +456,7 @@ def cleanup_old_outages():
 
 def check_upcoming_outages_and_notify():
     """
-    Перевіряє відключення (аварійні/планові/по чергах) які почнуться за 5 хвилин
+    Перевіряє відключення (аварійні/планові/по чергах) які почнуться за 10 хвилин
     Викликається кожні 5 хвилин
     """
     from app.services import firebase_service
@@ -463,15 +467,16 @@ def check_upcoming_outages_and_notify():
     db: Session = SessionLocal()
     try:
         current_time = datetime.now()
-        target_time = current_time + timedelta(minutes=5)
+        target_time = current_time + timedelta(minutes=10)
         
         logger.info(f"🔔 Перевірка відключень на {target_time.strftime('%H:%M')}...")
         
         # ========== 1. АВАРІЙНІ ВІДКЛЮЧЕННЯ ==========
         emergency_outages = db.query(EmergencyOutage).filter(
             EmergencyOutage.is_active == True,
-            EmergencyOutage.start_time >= current_time,
-            EmergencyOutage.start_time <= target_time
+            EmergencyOutage.notification_sent_at == None,  # ЩЕ НЕ ВІДПРАВЛЕНО
+            EmergencyOutage.start_time > current_time,  # У МАЙБУТНЬОМУ
+            EmergencyOutage.start_time <= target_time  # В МЕЖАХ 10 ХВИЛИН
         ).all()
         
         if emergency_outages:
@@ -481,11 +486,12 @@ def check_upcoming_outages_and_notify():
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
-            title = "⚠️ Аварійне відключення за 5 хвилин"
+            title = "⚠️ Аварійне відключення за 10 хвилин"
             body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
             
             logger.info(f"📤 Відправка аварійного пушу: {outage.city}, {outage.street}")
             
+            sent_successfully = False
             for house in outage.house_numbers.split(','):
                 house = house.strip()
                 result = firebase_service.send_to_address_users(
@@ -506,6 +512,7 @@ def check_upcoming_outages_and_notify():
                 )
                 
                 if result['success'] > 0:
+                    sent_successfully = True
                     crud_notifications.create_notification(
                         db=db,
                         notification_type="address",
@@ -516,17 +523,25 @@ def check_upcoming_outages_and_notify():
                             "city": outage.city,
                             "street": outage.street,
                             "house_number": house
-                        }]
+                        }],
+                        device_ids=result.get('device_ids', [])
                     )
                     logger.info(f"✅ Аварійний push: {result['success']} пристроїв для {outage.city}, {outage.street}, {house}")
                 else:
                     logger.info(f"ℹ️ Немає користувачів для {outage.city}, {outage.street}, {house}")
+            
+            # ФІКСУЄМО ЩО PUSH ВІДПРАВЛЕНО
+            if sent_successfully:
+                outage.notification_sent_at = current_time
+                db.commit()
+                logger.info(f"✅ Позначено аварійне відключення як оповіщене: {outage.id}")
         
         # ========== 2. ПЛАНОВІ ВІДКЛЮЧЕННЯ ==========
         planned_outages = db.query(PlannedOutage).filter(
             PlannedOutage.is_active == True,
-            PlannedOutage.start_time >= current_time,
-            PlannedOutage.start_time <= target_time
+            PlannedOutage.notification_sent_at == None,  # ЩЕ НЕ ВІДПРАВЛЕНО
+            PlannedOutage.start_time > current_time,  # У МАЙБУТНЬОМУ
+            PlannedOutage.start_time <= target_time  # В МЕЖАХ 10 ХВИЛИН
         ).all()
         
         if planned_outages:
@@ -536,11 +551,12 @@ def check_upcoming_outages_and_notify():
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
-            title = "📋 Планове відключення за 5 хвилин"
+            title = "📋 Планове відключення за 10 хвилин"
             body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
             
             logger.info(f"📤 Відправка планового пушу: {outage.city}, {outage.street}")
             
+            sent_successfully = False
             for house in outage.house_numbers.split(','):
                 house = house.strip()
                 result = firebase_service.send_to_address_users(
@@ -561,6 +577,7 @@ def check_upcoming_outages_and_notify():
                 )
                 
                 if result['success'] > 0:
+                    sent_successfully = True
                     crud_notifications.create_notification(
                         db=db,
                         notification_type="address",
@@ -571,78 +588,113 @@ def check_upcoming_outages_and_notify():
                             "city": outage.city,
                             "street": outage.street,
                             "house_number": house
-                        }]
+                        }],
+                        device_ids=result.get('device_ids', [])
                     )
                     logger.info(f"✅ Плановий push: {result['success']} пристроїв для {outage.city}, {outage.street}, {house}")
                 else:
                     logger.info(f"ℹ️ Немає користувачів для {outage.city}, {outage.street}, {house}")
+            
+            # ФІКСУЄМО ЩО PUSH ВІДПРАВЛЕНО
+            if sent_successfully:
+                outage.notification_sent_at = current_time
+                db.commit()
+                logger.info(f"✅ Позначено планове відключення як оповіщене: {outage.id}")
         
         # ========== 3. ВІДКЛЮЧЕННЯ ПО ЧЕРГАХ (1.1, 1.2, etc) ==========
+        from app.models import QueueNotification
+        
         today = current_time.date()
         schedule = crud_schedules.get_schedule_by_date(db=db, date_val=today)
         
         if schedule and schedule.parsed_data:
             parsed_data = schedule.parsed_data
-            target_hour = target_time.hour
-            hour_key = f"{target_hour:02d}:00"
             
-            # Якщо через 5 хв почнеться нова година з відключеннями
-            if hour_key in parsed_data:
-                queues_to_notify = parsed_data[hour_key]
-                logger.info(f"⚡ Знайдено черги для відключення о {hour_key}: {queues_to_notify}")
+            # ПРАВИЛЬНА ЛОГІКА: перевіряємо точний час, а не "якась година"
+            # Якщо зараз 08:50, а target_time 09:00 - відправляємо тільки для 09:00
+            for hour_str, queues in parsed_data.items():
+                hour = int(hour_str.split(':')[0])
                 
-                for queue in queues_to_notify:
-                    # Знаходимо користувачів з цією чергою
-                    user_addresses = db.query(UserAddress).filter(
-                        UserAddress.queue == queue
-                    ).all()
+                # Створюємо datetime для цієї години
+                outage_time = current_time.replace(hour=hour, minute=0, second=0, microsecond=0)
+                
+                # Якщо ця година в майбутньому і в межах 10 хвилин
+                if current_time < outage_time <= target_time:
+                    logger.info(f"⚡ Знайдено черги для відключення о {hour:02d}:00: {queues}")
                     
-                    if not user_addresses:
-                        logger.info(f"ℹ️ Немає користувачів для черги {queue}")
-                        continue
-                    
-                    logger.info(f"📤 Відправка push для черги {queue} ({len(user_addresses)} користувачів)")
-                    
-                    device_ids = [ua.device_id for ua in user_addresses]
-                    
-                    tokens = db.query(DeviceToken).filter(
-                        DeviceToken.device_id.in_(device_ids),
-                        DeviceToken.notifications_enabled == True
-                    ).all()
-                    
-                    if not tokens:
-                        logger.info(f"ℹ️ Немає активних пристроїв для черги {queue}")
-                        continue
-                    
-                    fcm_tokens = [token.fcm_token for token in tokens]
-                    
-                    title = f"⚡ Відключення черги {queue} за 5 хвилин"
-                    body = f"Згідно графіку, о {target_hour:02d}:00 буде відключено чергу {queue}"
-                    
-                    result = firebase_service.send_push_to_multiple(
-                        fcm_tokens=fcm_tokens,
-                        title=title,
-                        body=body,
-                        data={
-                            "type": "queue_outage",
-                            "queue": queue,
-                            "hour": str(target_hour)
-                        }
-                    )
-                    
-                    if result['success'] > 0:
-                        crud_notifications.create_notification(
-                            db=db,
-                            notification_type="queue",
-                            category="scheduled",
+                    for queue in queues:
+                        # ПЕРЕВІРКА: чи вже відправляли для цієї дати/години/черги
+                        already_sent = db.query(QueueNotification).filter(
+                            QueueNotification.date == today,
+                            QueueNotification.hour == hour,
+                            QueueNotification.queue == queue
+                        ).first()
+                        
+                        if already_sent:
+                            logger.info(f"ℹ️ Push для черги {queue} о {hour:02d}:00 вже відправлено раніше")
+                            continue
+                        
+                        # Знаходимо користувачів з цією чергою
+                        user_addresses = db.query(UserAddress).filter(
+                            UserAddress.queue == queue
+                        ).all()
+                        
+                        if not user_addresses:
+                            logger.info(f"ℹ️ Немає користувачів для черги {queue}")
+                            continue
+                        
+                        logger.info(f"📤 Відправка push для черги {queue} ({len(user_addresses)} користувачів)")
+                        
+                        # Дедуплікація: один користувач може мати кілька адрес
+                        device_ids = list(set([ua.device_id for ua in user_addresses]))
+                        
+                        tokens = db.query(DeviceToken).filter(
+                            DeviceToken.device_id.in_(device_ids),
+                            DeviceToken.notifications_enabled == True
+                        ).all()
+                        
+                        if not tokens:
+                            logger.info(f"ℹ️ Немає активних пристроїв для черги {queue}")
+                            continue
+                        
+                        fcm_tokens = [token.fcm_token for token in tokens]
+                        active_device_ids = [token.device_id for token in tokens]
+                        
+                        title = f"⚡ Відключення черги {queue} за 10 хвилин"
+                        body = f"Згідно графіку, о {hour:02d}:00 буде відключено чергу {queue}"
+                        
+                        result = firebase_service.send_push_to_multiple(
+                            fcm_tokens=fcm_tokens,
                             title=title,
-                            body=body
+                            body=body,
+                            data={
+                                "type": "queue_outage",
+                                "queue": queue,
+                                "hour": str(hour)
+                            }
                         )
-                        logger.info(f"✅ Черга {queue}: {result['success']} push відправлено")
-                    else:
-                        logger.info(f"⚠️ Черга {queue}: {result['failed']} помилок")
-            else:
-                logger.debug(f"ℹ️ Немає відключень о {hour_key}")
+                        
+                        if result['success'] > 0:
+                            # ФІКСУЄМО ЩО PUSH ВІДПРАВЛЕНО
+                            queue_notif = QueueNotification(
+                                date=today,
+                                hour=hour,
+                                queue=queue
+                            )
+                            db.add(queue_notif)
+                            db.commit()
+                            
+                            crud_notifications.create_notification(
+                                db=db,
+                                notification_type="queue",
+                                category="scheduled",
+                                title=title,
+                                body=body,
+                                device_ids=active_device_ids
+                            )
+                            logger.info(f"✅ Черга {queue}: {result['success']} push відправлено, зафіксовано в БД")
+                        else:
+                            logger.info(f"⚠️ Черга {queue}: {result['failed']} помилок")
         else:
             logger.debug("ℹ️ Немає графіка на сьогодні")
         
@@ -740,6 +792,149 @@ def cleanup_old_notifications_job():
         db.close()
 
 
+def reset_no_schedule_state(db: Session):
+    """
+    Скидає стан повідомлень "немає графіка" коли додається новий графік
+    """
+    from app.models import NoScheduleNotificationState
+    
+    try:
+        state = db.query(NoScheduleNotificationState).first()
+        
+        if not state:
+            # Створюємо початковий стан
+            state = NoScheduleNotificationState(
+                enabled=True,
+                consecutive_days_without_schedule=0
+            )
+            db.add(state)
+        else:
+            # Скидаємо лічильник і вмикаємо повідомлення
+            state.enabled = True
+            state.consecutive_days_without_schedule = 0
+        
+        db.commit()
+        logger.info("✅ Скинуто стан повідомлень 'немає графіка' (додано новий графік)")
+    
+    except Exception as e:
+        logger.error(f"❌ Помилка при скиданні стану: {e}")
+        db.rollback()
+
+
+def check_tomorrow_schedule_and_notify():
+    """
+    Перевіряє чи є графік на завтра (викликається о 23:00)
+    Якщо немає - відправляє повідомлення користувачам та в Telegram
+    
+    Логіка:
+    1. Перевіряємо чи є графік на завтра
+    2. Якщо немає і enabled=True → відправляємо push
+    3. Збільшуємо лічильник consecutive_days_without_schedule
+    4. Якщо лічильник досяг 5 → вимикаємо повідомлення (enabled=False)
+    5. Якщо є графік → пропускаємо (стан скинеться автоматично при додаванні графіка)
+    """
+    from app.models import NoScheduleNotificationState
+    from datetime import date, timedelta
+    from app import crud_schedules
+    from app.services import firebase_service, telegram_service
+    
+    db: Session = SessionLocal()
+    
+    try:
+        tomorrow = date.today() + timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%d.%m.%Y")
+        
+        logger.info(f"🌙 Перевірка графіка на завтра ({tomorrow_str}) о 23:00")
+        
+        # Отримуємо або створюємо стан
+        state = db.query(NoScheduleNotificationState).first()
+        if not state:
+            state = NoScheduleNotificationState(
+                enabled=True,
+                consecutive_days_without_schedule=0
+            )
+            db.add(state)
+            db.commit()
+        
+        # Перевіряємо чи є графік на завтра
+        schedule = crud_schedules.get_schedule_by_date(db=db, date_val=tomorrow)
+        
+        if schedule:
+            logger.info(f"✅ Графік на завтра ({tomorrow_str}) є в базі - повідомлення не потрібне")
+            state.last_check_date = date.today()
+            db.commit()
+            return
+        
+        # Графіка немає
+        logger.info(f"📭 Графіка на завтра ({tomorrow_str}) немає")
+        
+        # Перевіряємо чи увімкнені повідомлення
+        if not state.enabled:
+            logger.info(f"🔕 Повідомлення вимкнені (було {state.consecutive_days_without_schedule} днів без графіків)")
+            state.last_check_date = date.today()
+            db.commit()
+            return
+        
+        # Відправляємо повідомлення
+        title = "📭 Немає графіка на завтра"
+        body = f"Графік погодинних відключень на {tomorrow_str} ще не опубліковано"
+        
+        logger.info(f"📤 Відправка push всім користувачам: {title}")
+        
+        # Push всім користувачам
+        result = firebase_service.send_to_all_users(
+            db=db,
+            title=title,
+            body=body,
+            data={
+                "type": "no_schedule",
+                "date": tomorrow.isoformat()
+            }
+        )
+        
+        logger.info(f"✅ Push відправлено: {result['success']} успішно, {result['failed']} невдало")
+        
+        # Telegram повідомлення
+        telegram_message = f"📭 *Немає графіка на завтра*\n\nГрафік погодинних відключень на {tomorrow_str} ще не опубліковано"
+        telegram_service.send_telegram_notification(telegram_message)
+        logger.info("📨 Повідомлення відправлено в Telegram")
+        
+        # Зберігаємо в історію
+        crud_notifications.create_notification(
+            db=db,
+            notification_type="all",
+            category="no_schedule",
+            title=title,
+            body=body
+        )
+        
+        # Оновлюємо стан
+        state.consecutive_days_without_schedule += 1
+        state.last_check_date = date.today()
+        state.last_notification_date = date.today()
+        
+        logger.info(f"📊 Лічильник днів без графіка: {state.consecutive_days_without_schedule}")
+        
+        # Якщо 5 днів підряд - вимикаємо повідомлення
+        if state.consecutive_days_without_schedule >= 5:
+            state.enabled = False
+            logger.warning(f"🔕 ВИМКНЕНО повідомлення 'немає графіка' (5 днів поспіль)")
+            
+            # Відправляємо службове повідомлення в Telegram
+            admin_message = "⚠️ *Автоматичне вимкнення*\n\nПовідомлення 'немає графіка' вимкнено після 5 днів без графіків.\nВони автоматично увімкнуться коли з'явиться новий графік."
+            telegram_service.send_telegram_notification(admin_message)
+        
+        db.commit()
+        logger.info("✅ Перевірку графіка на завтра завершено")
+    
+    except Exception as e:
+        logger.error(f"❌ Помилка при перевірці графіка на завтра: {e}")
+        logger.exception("Детальна інформація:")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """
     Запускає планувальник з КОНФІГУРОВАНИМИ налаштуваннями:
@@ -772,8 +967,11 @@ def start_scheduler():
     scheduler.add_job(update_planned_outages, 'cron', hour=9, minute=0, id='planned')
     scheduler.add_job(update_planned_outages, 'date', run_date=start_time + timedelta(seconds=15), id='planned_initial')
     
-    # ⭐ Сповіщення за 5 хв (аварійні/планові/черги) - з заданим інтервалом
+    # ⭐ Сповіщення за 10 хв (аварійні/планові/черги) - з заданим інтервалом
     scheduler.add_job(check_upcoming_outages_and_notify, 'interval', minutes=check_interval, id='notifications')
+    
+    # ⭐ Перевірка чи є графік на завтра - щодня о 23:00
+    scheduler.add_job(check_tomorrow_schedule_and_notify, 'cron', hour=23, minute=0, id='check_tomorrow')
     
     # Очищення старих відключень - раз на добу о 2:00
     scheduler.add_job(cleanup_old_outages, 'cron', hour=2, minute=0, id='cleanup_outages')
@@ -788,7 +986,8 @@ def start_scheduler():
     logger.info(f"  ⚠️ Аварійні відключення: кожні {check_interval} хвилин")
     logger.info(f"  📢 Оголошення з сайту: кожні {check_interval} хвилин")
     logger.info("  📋 Планові відключення: щодня о 9:00")
-    logger.info(f"  🔔 Сповіщення за 5 хв: кожні {check_interval} хвилин")
+    logger.info(f"  🔔 Сповіщення за 10 хв: кожні {check_interval} хвилин")
+    logger.info("  🌙 Перевірка графіка на завтра: щодня о 23:00")
     logger.info("  🧹 Очищення відключень: щодня о 2:00")
     logger.info("  🧹 Очищення повідомлень: щодня о 3:00")
     logger.info("=" * 60)
