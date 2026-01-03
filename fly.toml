@@ -33,11 +33,6 @@ primary_region = 'ams'
   destination = "/data"
   initial_size = "1gb"
 
-[[mounts]]
-  source = "prosvitlo_static"
-  destination = "/data/static"
-  initial_size = "1gb"
-
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
