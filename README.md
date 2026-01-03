@@ -169,3 +169,36 @@ prosvitlo-backend/
 - Firebase Cloud Messaging
 - Telegram бот для оголошень (опціонально)
 - Групова розсилка по адресах
+
+---
+
+## 🚀 Деплой на Fly.io
+
+### Один раз налаштування:
+```bash
+# Встановіть flyctl
+brew install flyctl  # macOS
+# або https://fly.io/docs/hands-on/install-flyctl/
+
+# Увійдіть
+flyctl auth login
+```
+
+### Деплой:
+```bash
+fly deploy
+```
+
+### Після деплою перевірте:
+```bash
+# Статус
+fly status -a prosvitlo-backend
+
+# Логи
+fly logs -a prosvitlo-backend
+
+# SSH доступ
+fly ssh console -a prosvitlo-backend
+```
+
+**Примітка:** GitHub Actions автоматичний деплой вимкнено. Деплойте вручну через `fly deploy`.

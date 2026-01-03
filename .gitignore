@@ -72,3 +72,18 @@ app/static/schedules/*.png
 # Temporary files
 *.tmp
 *.temp
+
+# Test and migration scripts (не комітити)
+test_*.py
+migrate_*.py
+update_queues.py
+check_images.py
+PUSH_LOGIC_TEST.py
+команди для логів
+
+# Documentation (окрім основного README)
+DEPLOY.md
+FIX_BASE_URL.md
+INTERVAL_SETUP.md
+VOLUME_SETUP.md
+FIX_MISSING_IMAGES.md

@@ -64,8 +64,16 @@ htmlcov/
 *.md
 !README.md
 
+# Test and migration scripts
+test_*.py
+migrate_*.py
+update_*.py
+check_*.py
+PUSH_LOGIC_TEST.py
+
 # Fly.io
 fly.toml
 
 # Local scripts
-start.sh
+start*.sh
+команди для логів

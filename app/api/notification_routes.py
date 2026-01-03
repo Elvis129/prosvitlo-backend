@@ -94,9 +94,10 @@ class SendNotificationRequest(BaseModel):
     """Модель для ручної відправки повідомлення"""
     title: str
     body: str
-    notification_type: str  # "all" або "address"
+    notification_type: str = "tokens"  # "all", "address", або "tokens"
     category: str = 'general'  # 'general', 'outage', 'restored', 'scheduled', 'emergency'
     addresses: Optional[List[dict]] = None  # Для type="address"
+    fcm_tokens: Optional[List[str]] = None  # Для type="tokens" - список конкретних токенів
     data: Optional[dict] = None
 
 
@@ -324,6 +325,31 @@ async def send_notification(
                 body=request.body,
                 data=request.data
             )
+        elif request.notification_type == "tokens" and request.fcm_tokens:
+            # Відправляємо на конкретні токени (для тестування)
+            from firebase_admin import messaging
+            
+            messages = []
+            for token in request.fcm_tokens:
+                message = messaging.Message(
+                    notification=messaging.Notification(
+                        title=request.title,
+                        body=request.body
+                    ),
+                    data=request.data or {},
+                    token=token
+                )
+                messages.append(message)
+            
+            # Відправляємо всі повідомлення
+            if messages:
+                response = messaging.send_all(messages)
+                result = {
+                    'success': response.success_count,
+                    'failed': response.failure_count
+                }
+            else:
+                result = {'success': 0, 'failed': 0}
         elif request.notification_type == "address" and request.addresses:
             # Відправляємо для кожної адреси окремо
             total_success = 0
@@ -343,6 +369,16 @@ async def send_notification(
                 total_failed += result['failed']
             
             result = {'success': total_success, 'failed': total_failed}
+        elif request.notification_type == "tokens" and not request.fcm_tokens:
+            raise HTTPException(
+                status_code=400,
+                detail="For type='tokens', fcm_tokens list is required"
+            )
+        elif request.notification_type == "address" and not request.addresses:
+            raise HTTPException(
+                status_code=400,
+                detail="For type='address', addresses list is required"
+            )
         else:
             raise HTTPException(
                 status_code=400,
