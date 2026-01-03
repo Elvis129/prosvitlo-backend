@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+import os
 
 from app.config import settings
 from app.database import init_db
@@ -130,7 +131,16 @@ app = FastAPI(
 )
 
 # Монтуємо статичні файли для зображень графіків
-static_dir = Path(__file__).parent / "static"
+# В продакшені (Fly.io) використовуємо persistent volume
+USE_PERSISTENT_STORAGE = os.getenv('USE_PERSISTENT_STORAGE', 'false').lower() == 'true'
+
+if USE_PERSISTENT_STORAGE:
+    static_dir = Path("/data/static")
+    logger.info("🗂️  Using persistent storage for static files: /data/static")
+else:
+    static_dir = Path(__file__).parent / "static"
+    logger.info(f"🗂️  Using local storage for static files: {static_dir}")
+
 static_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

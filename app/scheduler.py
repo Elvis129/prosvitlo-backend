@@ -955,6 +955,11 @@ def start_scheduler():
     # ⭐ Графіки - перший запуск через 10с, потім з заданим інтервалом
     scheduler.add_job(update_schedules, 'interval', minutes=check_interval, id='schedules', next_run_time=start_time)
     
+    # ⭐ Перевірка та перезавантаження відсутніх зображень - при старті та щодня о 4:00
+    from app.utils.image_downloader_sync import check_and_redownload_missing_images
+    scheduler.add_job(lambda: check_and_redownload_missing_images(SessionLocal()), 'cron', hour=4, minute=0, id='check_images')
+    scheduler.add_job(lambda: check_and_redownload_missing_images(SessionLocal()), 'date', run_date=start_time + timedelta(seconds=30), id='check_images_initial')
+    
     # ⭐ Аварійні - перший запуск через 15с, потім з заданим інтервалом
     scheduler.add_job(update_emergency_outages, 'interval', minutes=check_interval, id='emergency', 
                      next_run_time=start_time + timedelta(seconds=5))
@@ -983,6 +988,7 @@ def start_scheduler():
     logger.info("=" * 60)
     logger.info("✅ Планувальник запущено:")
     logger.info(f"  📅 Графіки: кожні {check_interval} хвилин")
+    logger.info("  🖼️ Перевірка зображень: при старті та щодня о 4:00")
     logger.info(f"  ⚠️ Аварійні відключення: кожні {check_interval} хвилин")
     logger.info(f"  📢 Оголошення з сайту: кожні {check_interval} хвилин")
     logger.info("  📋 Планові відключення: щодня о 9:00")

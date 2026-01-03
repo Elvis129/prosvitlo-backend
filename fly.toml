@@ -10,6 +10,7 @@ primary_region = 'ams'
 
 [env]
   DATABASE_URL = "sqlite:////data/prosvitlo.db"
+  USE_PERSISTENT_STORAGE = "true"
 
 [http_service]
   internal_port = 8080
@@ -31,6 +32,11 @@ primary_region = 'ams'
   source = "prosvitlo_data"
   destination = "/data"
   initial_size = "1gb"
+
+[[mounts]]
+  source = "prosvitlo_static"
+  destination = "/data/static"
+  initial_size = "500mb"
 
 [[vm]]
   memory = '1gb'
