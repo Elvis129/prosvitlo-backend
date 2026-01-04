@@ -42,11 +42,18 @@ def create_or_update_device_token(
         db.commit()
     
     if device_token:
+        # Перевіряємо чи змінився токен
+        token_changed = device_token.fcm_token != fcm_token
+        
         # Оновлюємо існуючий токен
         device_token.fcm_token = fcm_token
         device_token.platform = platform
         device_token.updated_at = datetime.now(timezone.utc)
-        logger.info(f"Updated FCM token for device: {device_id}")
+        
+        if token_changed:
+            logger.info(f"✏️ Updated FCM token for device: {device_id} (token changed)")
+        else:
+            logger.info(f"✏️ Refreshed FCM token for device: {device_id} (token same)")
     else:
         # Створюємо новий токен
         device_token = DeviceToken(
@@ -56,7 +63,7 @@ def create_or_update_device_token(
             notifications_enabled=True
         )
         db.add(device_token)
-        logger.info(f"Created new device token: {device_id}")
+        logger.info(f"✨ Created new device token: {device_id}")
     
     db.commit()
     db.refresh(device_token)

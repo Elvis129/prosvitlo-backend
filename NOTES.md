@@ -36,3 +36,65 @@ fly deploy
 - В .gitignore
 - НЕ комітити в репозиторій
 - На Fly.io додано як секрет
+
+## Проблема з відсутніми push-повідомленнями (4 січня 2026)
+
+### Виявлена проблема:
+- **База даних створена 30 грудня** (коли створювався volume)
+- З 18 тестувальників **тільки 6 зареєстрували токени** (ті хто відкрив додаток після 30 грудня)
+- Решта 12 користувачів **не отримують пуші**, бо їх токенів немає в базі
+- Додаток **НЕ відправляє токен повторно**, якщо вважає що він вже зареєстрований
+
+### Що було зроблено:
+1. ✅ Додано детальну обробку помилок Firebase (виявлення невалідних токенів)
+2. ✅ Додано автоматичне видалення невалідних токенів з бази
+3. ✅ Додано дедуплікацію токенів у всіх функціях відправки
+4. ✅ Додано endpoint `GET /api/v1/tokens/{device_id}/exists` для перевірки існування токена
+5. ✅ Покращено логування реєстрації токенів (відрізняємо "створено" vs "оновлено")
+
+### Що потрібно зробити на стороні додатка:
+
+#### Варіант 1 (Рекомендований): Перевірка при старті
+```kotlin
+// При старті додатка перевіряємо чи токен існує на сервері
+suspend fun checkAndRegisterToken() {
+    val deviceId = getDeviceId()
+    val response = api.checkTokenExists(deviceId)
+    
+    if (!response.exists) {
+        // Токена немає на сервері - реєструємо
+        val fcmToken = FirebaseMessaging.getInstance().token.await()
+        api.registerToken(deviceId, fcmToken, platform)
+    }
+}
+```
+
+#### Варіант 2: Періодична реєстрація
+```kotlin
+// Відправляти токен раз на добу незалежно від того чи він змінився
+if (shouldRefreshToken()) { // перевіряємо lastSync дату
+    val fcmToken = FirebaseMessaging.getInstance().token.await()
+    api.registerToken(deviceId, fcmToken, platform)
+}
+```
+
+#### Варіант 3: Завжди відправляти
+```kotlin
+// При кожному запуску додатка відправляти токен (найпростіше)
+// Сервер сам визначить чи потрібно оновлювати
+val fcmToken = FirebaseMessaging.getInstance().token.await()
+api.registerToken(deviceId, fcmToken, platform)
+```
+
+### Тимчасове рішення для тестувальників:
+Попросити всіх тестувальників **перевстановити додаток** або **очистити дані додатка** - це змусить його зареєструвати токен заново.
+
+### Моніторинг:
+```bash
+# Перевірити кількість зареєстрованих токенів
+flyctl ssh console -a prosvitlo-backend
+python -c "import sqlite3; conn = sqlite3.connect('/data/prosvitlo.db'); cursor = conn.cursor(); cursor.execute('SELECT COUNT(*) FROM device_tokens'); print(f'Tokens: {cursor.fetchone()[0]}'); conn.close()"
+
+# Подивитися останні реєстрації
+flyctl logs -a prosvitlo-backend | grep "device token"
+```

@@ -148,6 +148,19 @@ async def unregister_device_token(
         raise HTTPException(status_code=500, detail=f"Failed to unregister token: {str(e)}")
 
 
+@router.get("/tokens/{device_id}/exists", tags=["Notifications"])
+async def check_device_token_exists(
+    device_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Швидка перевірка чи існує токен пристрою на сервері
+    Повертає: {"exists": true/false}
+    """
+    device_token = crud_notifications.get_device_token(db, device_id)
+    return {"exists": device_token is not None}
+
+
 @router.get("/tokens/{device_id}", response_model=DeviceTokenResponse, tags=["Notifications"])
 async def get_device_token_info(
     device_id: str,
