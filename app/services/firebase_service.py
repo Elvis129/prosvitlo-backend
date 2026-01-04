@@ -136,6 +136,7 @@ def send_push_to_multiple(
         
         success_count = 0
         failed_count = 0
+        invalid_tokens = []  # Збираємо невалідні токени
         
         # Відправляємо по одному токену
         for idx, token in enumerate(fcm_tokens, 1):
@@ -169,12 +170,35 @@ def send_push_to_multiple(
                 response = messaging.send(message)
                 success_count += 1
                 logger.info(f"✅ Успішно відправлено на токен {token[:20]}...: {response}")
+            except messaging.UnregisteredError:
+                logger.error(f"❌ Токен {token[:20]}... не зареєстрований (пристрій видалив додаток)")
+                invalid_tokens.append(token)
+                failed_count += 1
+            except messaging.SenderIdMismatchError:
+                logger.error(f"❌ Токен {token[:20]}... належить іншому проєкту")
+                invalid_tokens.append(token)
+                failed_count += 1
             except Exception as e:
+                error_str = str(e)
                 logger.error(f"❌ Помилка відправки на токен {token[:20]}...: {e}")
+                # Перевіряємо чи це помилка невалідного токену
+                if 'registration-token-not-registered' in error_str or 'invalid-registration-token' in error_str:
+                    logger.warning(f"⚠️ Токен {token[:20]}... невалідний, додаємо до списку видалення")
+                    invalid_tokens.append(token)
                 failed_count += 1
         
         logger.info(f"✅ Завершено відправку: успішно={success_count}, невдало={failed_count}")
-        return {'success': success_count, 'failed': failed_count}
+        
+        # Повертаємо результат з невалідними токенами
+        result = {
+            'success': success_count,
+            'failed': failed_count
+        }
+        if invalid_tokens:
+            result['invalid_tokens'] = invalid_tokens
+            logger.warning(f"⚠️ Виявлено {len(invalid_tokens)} невалідних токенів")
+        
+        return result
     
     except Exception as e:
         logger.error(f"❌ КРИТИЧНА помилка при відправці multicast push: {e}")
@@ -239,12 +263,27 @@ def send_to_address_users(
             logger.info(f"❌ Немає пристроїв з увімкненими сповіщеннями для адреси: {city}, {street}, {house_number}")
             return {'success': 0, 'failed': 0}
         
-        fcm_tokens = [token.fcm_token for token in tokens]
-        active_device_ids = [token.device_id for token in tokens]
+        # Дедуплікація токенів (на випадок дублікатів)
+        fcm_tokens = list(set([token.fcm_token for token in tokens]))
+        active_device_ids = list(set([token.device_id for token in tokens]))
+        
+        logger.info(f"📊 Унікальних токенів після дедуплікації: {len(fcm_tokens)}")
         
         # Відправляємо мультикаст повідомлення
         logger.info(f"📤 Відправка пушу на {len(fcm_tokens)} пристроїв для адреси {city}, {street}, {house_number}")
         result = send_push_to_multiple(fcm_tokens, title, body, data)
+        
+        # Видаляємо невалідні токени з бази
+        if 'invalid_tokens' in result and result['invalid_tokens']:
+            logger.info(f"🗑️ Видалення {len(result['invalid_tokens'])} невалідних токенів з бази...")
+            for invalid_token in result['invalid_tokens']:
+                token_to_delete = db.query(DeviceToken).filter(
+                    DeviceToken.fcm_token == invalid_token
+                ).first()
+                if token_to_delete:
+                    logger.info(f"🗑️ Видаляємо токен {token_to_delete.device_id} (невалідний)")
+                    db.delete(token_to_delete)
+            db.commit()
         
         # Додаємо device_ids для збереження в історію
         result['device_ids'] = active_device_ids
@@ -291,13 +330,27 @@ def send_to_all_users(
             logger.warning("⚠️ Немає пристроїв з увімкненими сповіщеннями")
             return {'success': 0, 'failed': 0}
         
-        fcm_tokens = [token.fcm_token for token in tokens]
+        # Дедуплікація токенів (на випадок дублікатів в базі)
+        fcm_tokens = list(set([token.fcm_token for token in tokens]))
+        logger.info(f"📊 Унікальних токенів після дедуплікації: {len(fcm_tokens)}")
         
         # Відправляємо мультикаст повідомлення
         logger.info(f"📤 Відправка broadcast пушу на {len(fcm_tokens)} пристроїв...")
         logger.info(f"📝 Заголовок: {title}")
         logger.info(f"📝 Текст: {body[:100]}..." if len(body) > 100 else f"📝 Текст: {body}")
         result = send_push_to_multiple(fcm_tokens, title, body, data)
+        
+        # Видаляємо невалідні токени з бази
+        if 'invalid_tokens' in result and result['invalid_tokens']:
+            logger.info(f"🗑️ Видалення {len(result['invalid_tokens'])} невалідних токенів з бази...")
+            for invalid_token in result['invalid_tokens']:
+                token_to_delete = db.query(DeviceToken).filter(
+                    DeviceToken.fcm_token == invalid_token
+                ).first()
+                if token_to_delete:
+                    logger.info(f"🗑️ Видаляємо токен {token_to_delete.device_id} (невалідний)")
+                    db.delete(token_to_delete)
+            db.commit()
         
         logger.info(f"✅ Broadcast завершено: успішно={result['success']}, невдало={result['failed']}")
         return result

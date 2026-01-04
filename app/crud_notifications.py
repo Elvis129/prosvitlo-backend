@@ -23,11 +23,23 @@ def create_or_update_device_token(
 ) -> DeviceToken:
     """
     Створює новий або оновлює існуючий токен пристрою
+    Якщо fcm_token вже існує в іншого пристрою - видаляє старий запис
     """
     # Перевіряємо чи існує токен для цього пристрою
     device_token = db.query(DeviceToken).filter(
         DeviceToken.device_id == device_id
     ).first()
+    
+    # Перевіряємо чи цей fcm_token не використовується іншим пристроєм
+    existing_token_by_fcm = db.query(DeviceToken).filter(
+        DeviceToken.fcm_token == fcm_token,
+        DeviceToken.device_id != device_id
+    ).first()
+    
+    if existing_token_by_fcm:
+        logger.info(f"FCM токен вже використовується пристроєм {existing_token_by_fcm.device_id}, видаляємо старий запис")
+        db.delete(existing_token_by_fcm)
+        db.commit()
     
     if device_token:
         # Оновлюємо існуючий токен
