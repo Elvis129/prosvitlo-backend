@@ -8,8 +8,12 @@ from app import models
 from typing import List, Optional
 from datetime import datetime
 import logging
+import pytz
 
 import re
+
+# Київська часова зона
+KYIV_TZ = pytz.timezone('Europe/Kiev')
 
 def normalize_city_name(city: str) -> str:
     """
@@ -100,7 +104,8 @@ def get_active_emergency_outages_for_address(
     # Нормалізуємо назву міста
     city_normalized = normalize_city_name(city)
     
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     # Знаходимо всі відключення для цього міста та вулиці
     outages = db.query(models.EmergencyOutage).filter(
@@ -136,7 +141,8 @@ def get_active_planned_outages_for_address(
     # Нормалізуємо назву міста
     city_normalized = normalize_city_name(city)
     
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     # Знаходимо всі відключення для цього міста та вулиці
     outages = db.query(models.PlannedOutage).filter(
@@ -172,7 +178,8 @@ def get_upcoming_emergency_outages_for_address(
     # Нормалізуємо назву міста
     city_normalized = normalize_city_name(city)
     
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     outages = db.query(models.EmergencyOutage).filter(
         and_(
@@ -205,7 +212,8 @@ def get_upcoming_planned_outages_for_address(
     # Нормалізуємо назву міста
     city_normalized = normalize_city_name(city)
     
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     outages = db.query(models.PlannedOutage).filter(
         and_(
@@ -230,7 +238,8 @@ def deactivate_old_emergency_outages(db: Session) -> int:
     """
     Деактивує аварійні відключення, час яких минув
     """
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     count = db.query(models.EmergencyOutage).filter(
         and_(
@@ -248,7 +257,8 @@ def deactivate_old_planned_outages(db: Session) -> int:
     """
     Деактивує планові відключення, час яких минув
     """
-    now = datetime.now()
+    # Використовуємо київський час для порівняння
+    now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     count = db.query(models.PlannedOutage).filter(
         and_(

@@ -11,6 +11,10 @@ import logging
 from datetime import date, datetime, timedelta
 import hashlib
 import json
+import pytz
+
+# Київська часова зона
+KYIV_TZ = pytz.timezone('Europe/Kiev')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -312,9 +316,10 @@ def update_emergency_outages():
         for outage_hash in to_remove:
             existing_by_hash[outage_hash].is_active = False
         
+        new_outages_list = []
         for outage_hash in to_add:
             outage = outages_by_hash[outage_hash]
-            crud_outages.create_emergency_outage(
+            new_outage = crud_outages.create_emergency_outage(
                 db=db,
                 rem_id=outage['rem_id'],
                 rem_name=outage['rem_name'],
@@ -326,8 +331,14 @@ def update_emergency_outages():
                 start_time=outage['start_time'],
                 end_time=outage['end_time']
             )
+            new_outages_list.append(new_outage)
         
         db.commit()
+        
+        # 🔔 НЕГАЙНА ВІДПРАВКА ПУШІВ для нових відключень
+        if new_outages_list:
+            logger.info(f"🔔 Відправка негайних пушів для {len(new_outages_list)} нових аварійних відключень")
+            notify_new_outages_immediately(db, new_outages_list, "emergency")
         
     except Exception as e:
         logger.error(f"Помилка при оновленні аварійних: {e}")
@@ -397,9 +408,10 @@ def update_planned_outages():
         for outage_hash in to_remove:
             existing_by_hash[outage_hash].is_active = False
         
+        new_outages_list = []
         for outage_hash in to_add:
             outage = outages_by_hash[outage_hash]
-            crud_outages.create_planned_outage(
+            new_outage = crud_outages.create_planned_outage(
                 db=db,
                 rem_id=outage['rem_id'],
                 rem_name=outage['rem_name'],
@@ -411,8 +423,14 @@ def update_planned_outages():
                 start_time=outage['start_time'],
                 end_time=outage['end_time']
             )
+            new_outages_list.append(new_outage)
         
         db.commit()
+        
+        # 🔔 НЕГАЙНА ВІДПРАВКА ПУШІВ для нових відключень
+        if new_outages_list:
+            logger.info(f"🔔 Відправка негайних пушів для {len(new_outages_list)} нових планових відключень")
+            notify_new_outages_immediately(db, new_outages_list, "planned")
         
     except Exception as e:
         logger.error(f"Помилка при оновленні планових: {e}")
@@ -425,7 +443,7 @@ def cleanup_old_outages():
     """Видаляє старі відключення"""
     db: Session = SessionLocal()
     try:
-        current_time = datetime.now()
+        current_time = datetime.now(KYIV_TZ).replace(tzinfo=None)
         cutoff_time = current_time - timedelta(days=7)
         
         old_emergency = db.query(EmergencyOutage).filter(
@@ -454,9 +472,101 @@ def cleanup_old_outages():
         db.close()
 
 
+def notify_new_outages_immediately(db: Session, outages_list, outage_type: str):
+    """
+    Негайно відправляє пуші для нових відключень що щойно з'явились
+    
+    Args:
+        db: Database session
+        outages_list: Список нових відключень (EmergencyOutage або PlannedOutage)
+        outage_type: "emergency" або "planned"
+    """
+    from app.services import firebase_service
+    from app import crud_notifications
+    
+    # Використовуємо naive datetime для порівняння з naive datetime в БД
+    current_time = datetime.now(KYIV_TZ).replace(tzinfo=None)
+    
+    for outage in outages_list:
+        # Відправляємо ТІЛЬКИ якщо відключення ще не закінчилося
+        if outage.end_time <= current_time:
+            logger.info(f"⏭️ Пропуск - відключення вже закінчилося: {outage.city}, {outage.street}")
+            continue
+        
+        start_time_str = outage.start_time.strftime("%H:%M")
+        end_time_str = outage.end_time.strftime("%H:%M")
+        
+        # Визначаємо тип повідомлення
+        if outage.start_time <= current_time:
+            # Відключення вже почалося
+            if outage_type == "emergency":
+                title = "⚠️ Аварійне відключення ЗАРАЗ"
+            else:
+                title = "📋 Планове відключення ЗАРАЗ"
+            time_info = f"Почалося о {start_time_str}, триватиме до {end_time_str}"
+        else:
+            # Відключення ще не почалося
+            minutes_until = int((outage.start_time - current_time).total_seconds() / 60)
+            if outage_type == "emergency":
+                title = f"⚠️ Аварійне відключення через {minutes_until} хв"
+            else:
+                title = f"📋 Планове відключення через {minutes_until} хв"
+            time_info = f"{start_time_str} - {end_time_str}"
+        
+        body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{time_info}"
+        
+        logger.info(f"📤 Негайний пуш: {outage.city}, {outage.street}")
+        
+        sent_successfully = False
+        for house in outage.house_numbers.split(','):
+            house = house.strip()
+            result = firebase_service.send_to_address_users(
+                db=db,
+                city=outage.city,
+                street=outage.street,
+                house_number=house,
+                title=title,
+                body=body,
+                data={
+                    "type": outage_type,
+                    "city": outage.city,
+                    "street": outage.street,
+                    "house_number": house,
+                    "start_time": outage.start_time.isoformat(),
+                    "end_time": outage.end_time.isoformat()
+                }
+            )
+            
+            if result['success'] > 0:
+                sent_successfully = True
+                crud_notifications.create_notification(
+                    db=db,
+                    notification_type="address",
+                    category=outage_type,
+                    title=title,
+                    body=body,
+                    addresses=[{
+                        "city": outage.city,
+                        "street": outage.street,
+                        "house_number": house
+                    }],
+                    device_ids=result.get('device_ids', [])
+                )
+                logger.info(f"✅ Негайний push: {result['success']} пристроїв для {house}")
+            else:
+                logger.info(f"ℹ️ Немає користувачів для {house}")
+        
+        # ФІКСУЄМО ЩО PUSH ВІДПРАВЛЕНО
+        if sent_successfully:
+            outage.notification_sent_at = current_time
+            db.commit()
+            logger.info(f"✅ Позначено відключення як оповіщене: {outage.id}")
+
+
 def check_upcoming_outages_and_notify():
     """
     Перевіряє відключення (аварійні/планові/по чергах) які почнуться за 10 хвилин
+    АБО вже почалися але ще не отримали сповіщення
     Викликається кожні 5 хвилин
     """
     from app.services import firebase_service
@@ -466,28 +576,44 @@ def check_upcoming_outages_and_notify():
     
     db: Session = SessionLocal()
     try:
-        current_time = datetime.now()
+        # Використовуємо київський час (naive для порівняння з БД)
+        current_time = datetime.now(KYIV_TZ).replace(tzinfo=None)
         target_time = current_time + timedelta(minutes=10)
         
         logger.info(f"🔔 Перевірка відключень на {target_time.strftime('%H:%M')}...")
         
         # ========== 1. АВАРІЙНІ ВІДКЛЮЧЕННЯ ==========
+        # Відправляємо пуші для:
+        # 1) Відключень що почнуться за 10 хвилин
+        # 2) Відключень що вже почалися (start_time < current_time) але ще не закінчилися
         emergency_outages = db.query(EmergencyOutage).filter(
             EmergencyOutage.is_active == True,
             EmergencyOutage.notification_sent_at == None,  # ЩЕ НЕ ВІДПРАВЛЕНО
-            EmergencyOutage.start_time > current_time,  # У МАЙБУТНЬОМУ
-            EmergencyOutage.start_time <= target_time  # В МЕЖАХ 10 ХВИЛИН
+            EmergencyOutage.end_time > current_time,  # Ще не закінчилося
+            # АБО почнеться за 10 хвилин АБО вже почалося
         ).all()
         
         if emergency_outages:
-            logger.info(f"⚠️ Знайдено {len(emergency_outages)} аварійних відключень")
+            logger.info(f"⚠️ Знайдено {len(emergency_outages)} аварійних відключень для перевірки")
         
         for outage in emergency_outages:
+            # Перевіряємо чи це відключення в межах 10 хвилин АБО вже почалося
+            if not (outage.start_time <= target_time or outage.start_time < current_time):
+                continue
+                
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
-            title = "⚠️ Аварійне відключення за 10 хвилин"
-            body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
+            # Визначаємо тип повідомлення
+            if outage.start_time < current_time:
+                title = "⚠️ Аварійне відключення ЗАРАЗ"
+                time_info = f"Почалося о {start_time_str}, триватиме до {end_time_str}"
+            else:
+                minutes_until = int((outage.start_time - current_time).total_seconds() / 60)
+                title = f"⚠️ Аварійне відключення за {minutes_until} хв"
+                time_info = f"{start_time_str} - {end_time_str}"
+            
+            body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{time_info}"
             
             logger.info(f"📤 Відправка аварійного пушу: {outage.city}, {outage.street}")
             
@@ -540,19 +666,30 @@ def check_upcoming_outages_and_notify():
         planned_outages = db.query(PlannedOutage).filter(
             PlannedOutage.is_active == True,
             PlannedOutage.notification_sent_at == None,  # ЩЕ НЕ ВІДПРАВЛЕНО
-            PlannedOutage.start_time > current_time,  # У МАЙБУТНЬОМУ
-            PlannedOutage.start_time <= target_time  # В МЕЖАХ 10 ХВИЛИН
+            PlannedOutage.end_time > current_time,  # Ще не закінчилося
         ).all()
         
         if planned_outages:
-            logger.info(f"📋 Знайдено {len(planned_outages)} планових відключень")
+            logger.info(f"📋 Знайдено {len(planned_outages)} планових відключень для перевірки")
         
         for outage in planned_outages:
+            # Перевіряємо чи це відключення в межах 10 хвилин АБО вже почалося
+            if not (outage.start_time <= target_time or outage.start_time < current_time):
+                continue
+                
             start_time_str = outage.start_time.strftime("%H:%M")
             end_time_str = outage.end_time.strftime("%H:%M")
             
-            title = "📋 Планове відключення за 10 хвилин"
-            body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{start_time_str} - {end_time_str}"
+            # Визначаємо тип повідомлення
+            if outage.start_time < current_time:
+                title = "📋 Планове відключення ЗАРАЗ"
+                time_info = f"Почалося о {start_time_str}, триватиме до {end_time_str}"
+            else:
+                minutes_until = int((outage.start_time - current_time).total_seconds() / 60)
+                title = f"📋 Планове відключення за {minutes_until} хв"
+                time_info = f"{start_time_str} - {end_time_str}"
+            
+            body = f"{outage.city}, {outage.street}, {outage.house_numbers}\n{time_info}"
             
             logger.info(f"📤 Відправка планового пушу: {outage.city}, {outage.street}")
             
@@ -610,17 +747,19 @@ def check_upcoming_outages_and_notify():
         if schedule and schedule.parsed_data:
             parsed_data = schedule.parsed_data
             
-            # ПРАВИЛЬНА ЛОГІКА: перевіряємо точний час, а не "якась година"
-            # Якщо зараз 08:50, а target_time 09:00 - відправляємо тільки для 09:00
+            # Перевіряємо відключення за 10 хвилин АБО ті що вже почалися
             for hour_str, queues in parsed_data.items():
                 hour = int(hour_str.split(':')[0])
                 
-                # Створюємо datetime для цієї години
+                # Створюємо datetime для цієї години (в київському часі)
                 outage_time = current_time.replace(hour=hour, minute=0, second=0, microsecond=0)
                 
-                # Якщо ця година в майбутньому і в межах 10 хвилин
-                if current_time < outage_time <= target_time:
-                    logger.info(f"⚡ Знайдено черги для відключення о {hour:02d}:00: {queues}")
+                # Якщо ця година в межах 10 хвилин АБО вже почалася (але не більше години тому)
+                time_diff = (current_time - outage_time).total_seconds() / 60  # різниця в хвилинах
+                should_notify = (current_time < outage_time <= target_time) or (0 <= time_diff <= 60)
+                
+                if should_notify:
+                    logger.info(f"⚡ Перевірка черг для відключення о {hour:02d}:00: {queues}")
                     
                     for queue in queues:
                         # ПЕРЕВІРКА: чи вже відправляли для цієї дати/години/черги
@@ -631,7 +770,7 @@ def check_upcoming_outages_and_notify():
                         ).first()
                         
                         if already_sent:
-                            logger.info(f"ℹ️ Push для черги {queue} о {hour:02d}:00 вже відправлено раніше")
+                            logger.debug(f"ℹ️ Push для черги {queue} о {hour:02d}:00 вже відправлено раніше")
                             continue
                         
                         # Знаходимо користувачів з цією чергою
@@ -643,7 +782,7 @@ def check_upcoming_outages_and_notify():
                             logger.info(f"ℹ️ Немає користувачів для черги {queue}")
                             continue
                         
-                        logger.info(f"📤 Відправка push для черги {queue} ({len(user_addresses)} користувачів)")
+                        logger.info(f"📤 Відправка push для черги {queue} ({len(user_addresses)} адрес)")
                         
                         # Дедуплікація: один користувач може мати кілька адрес
                         device_ids = list(set([ua.device_id for ua in user_addresses]))
@@ -660,8 +799,14 @@ def check_upcoming_outages_and_notify():
                         fcm_tokens = [token.fcm_token for token in tokens]
                         active_device_ids = [token.device_id for token in tokens]
                         
-                        title = f"⚡ Відключення черги {queue} за 10 хвилин"
-                        body = f"Згідно графіку, о {hour:02d}:00 буде відключено чергу {queue}"
+                        # Визначаємо текст повідомлення
+                        if time_diff > 0:
+                            title = f"⚡ Відключення черги {queue} ЗАРАЗ"
+                            body = f"Почалося о {hour:02d}:00 згідно графіку"
+                        else:
+                            minutes_until = int((outage_time - current_time).total_seconds() / 60)
+                            title = f"⚡ Відключення черги {queue} за {minutes_until} хв"
+                            body = f"Згідно графіку, о {hour:02d}:00 буде відключено чергу {queue}"
                         
                         result = firebase_service.send_push_to_multiple(
                             fcm_tokens=fcm_tokens,

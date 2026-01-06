@@ -222,6 +222,13 @@ async def add_saved_address(
             if address_queue:
                 queue = address_queue.queue
         
+        # Нормалізація черги: витягуємо тільки "X.X" з "X.X. підчерга" або іншого формату
+        if queue:
+            import re
+            match = re.match(r'^(\d+\.\d+)', queue)
+            if match:
+                queue = match.group(1)  # "4.1. підчерга" → "4.1"
+        
         user_address = crud_notifications.add_user_address(
             db=db,
             device_id=request.device_id,
