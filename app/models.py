@@ -253,6 +253,36 @@ class QueueNotification(Base):
         return f"<QueueNotification(date={self.date}, hour={self.hour}, queue={self.queue})>"
 
 
+class AnnouncementOutage(Base):
+    """
+    Модель для зберігання додаткових проміжків відключення з оголошень
+    Використовується коли в оголошеннях вказано "підчергу X.Y з HH:MM до HH:MM"
+    """
+    __tablename__ = "announcement_outages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)  # Дата відключення
+    queue = Column(String, nullable=False, index=True)  # Черга (наприклад "6.2")
+    start_hour = Column(Integer, nullable=False)  # Година початку (0-23)
+    end_hour = Column(Integer, nullable=False)  # Година завершення (0-23)
+    announcement_text = Column(Text, nullable=True)  # Текст оголошення (для контексту)
+    is_active = Column(Boolean, default=True, index=True)  # Чи актуальне відключення
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    notification_sent_at = Column(DateTime(timezone=True), nullable=True)  # Коли відправлено пуш
+    
+    __table_args__ = (
+        Index('idx_announcement_outage_date_queue', 'date', 'queue', 'start_hour'),
+        Index('idx_announcement_outage_active', 'is_active', 'date'),
+    )
+    
+    def __repr__(self):
+        return f"<AnnouncementOutage(date={self.date}, queue={self.queue}, {self.start_hour}:00-{self.end_hour}:00)>"
+
+    
+    def __repr__(self):
+        return f"<QueueNotification(date={self.date}, hour={self.hour}, queue={self.queue})>"
+
+
 class NoScheduleNotificationState(Base):
     """
     Модель для відстеження стану повідомлень про відсутність графіка

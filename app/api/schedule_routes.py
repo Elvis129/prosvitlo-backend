@@ -149,6 +149,22 @@ async def get_outage_status(
         queue_clean = queue.replace(". підчерга", "").replace(" підчерга", "").strip()
         user_intervals = queue_schedules_tuples.get(queue_clean, []) or queue_schedules_tuples.get(queue, [])
         
+        # ⭐ ДОДАЄМО проміжки з оголошень (AnnouncementOutage)
+        from app.models import AnnouncementOutage
+        announcement_outages = db.query(AnnouncementOutage).filter(
+            AnnouncementOutage.date == target_date,
+            AnnouncementOutage.queue == queue_clean,
+            AnnouncementOutage.is_active == True
+        ).all()
+        
+        if announcement_outages:
+            logger.info(f"📢 Знайдено {len(announcement_outages)} додаткових проміжків з оголошень для черги {queue_clean}")
+            # Конвертуємо в той же формат (start, end) і додаємо до user_intervals
+            for ao in announcement_outages:
+                user_intervals.append((ao.start_hour, ao.end_hour))
+            # Сортуємо по часу початку
+            user_intervals = sorted(user_intervals, key=lambda x: x[0])
+        
         if not user_intervals:
             logger.warning(f"Не знайдено інтервалів для черги {queue} (очищено: {queue_clean})")
             return OutageStatusResponse(

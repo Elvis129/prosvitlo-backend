@@ -29,6 +29,15 @@ async def api_status():
     )
 
 
+@router.get("/scheduler/jobs")
+async def get_scheduler_jobs():
+    """
+    Детальна інформація про scheduler jobs
+    """
+    scheduler_status = get_scheduler_status()
+    return scheduler_status
+
+
 # ===== ЗАЛИШЕНО ТІЛЬКИ ДЛЯ СУМІСНОСТІ З СТАРОЮ ВЕРСІЄЮ (deprecated) =====
 # Ці endpoints будуть видалені в наступній версії
 

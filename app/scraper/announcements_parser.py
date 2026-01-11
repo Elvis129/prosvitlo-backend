@@ -132,9 +132,11 @@ def _analyze_changes(template_content: List[str], current_content: List[str]) ->
     
     # Знаходимо нові параграфи (є в current, немає в template)
     new_paragraphs = []
-    for para in current_content:
+    new_indices = []  # Індекси нових параграфів
+    for i, para in enumerate(current_content):
         if para not in template_content:
             new_paragraphs.append(para)
+            new_indices.append(i)
     
     if not new_paragraphs:
         logger.info("Зміни виявлені, але нових параграфів немає")
@@ -142,10 +144,34 @@ def _analyze_changes(template_content: List[str], current_content: List[str]) ->
     
     logger.info(f"Знайдено {len(new_paragraphs)} нових параграфів")
     
-    # Групуємо нові параграфи в оголошення
+    # ⭐ ВИПРАВЛЕННЯ: Для кожного нового параграфа беремо КОНТЕКСТ навколо нього
+    # Це дозволяє захопити "UPD:" якщо він вже був в template
+    context_range = 3  # Беремо 3 параграфи до і після
+    context_paragraphs = set()
+    
+    for idx in new_indices:
+        # Додаємо параграфи ДО нового (попередній контекст)
+        for i in range(max(0, idx - context_range), idx):
+            if i < len(current_content):
+                context_paragraphs.add((i, current_content[i]))
+        
+        # Додаємо сам новий параграф
+        context_paragraphs.add((idx, current_content[idx]))
+        
+        # Додаємо параграфи ПІСЛЯ нового (наступний контекст)
+        for i in range(idx + 1, min(len(current_content), idx + context_range + 1)):
+            context_paragraphs.add((i, current_content[i]))
+    
+    # Сортуємо по індексу щоб отримати правильний порядок
+    sorted_context = sorted(context_paragraphs, key=lambda x: x[0])
+    paragraphs_to_process = [para for idx, para in sorted_context]
+    
+    logger.info(f"З урахуванням контексту обробляємо {len(paragraphs_to_process)} параграфів")
+    
+    # Групуємо параграфи в оголошення
     current_announcement = []
     
-    for para in new_paragraphs:
+    for para in paragraphs_to_process:
         # Пропускаємо стандартні заголовки
         if para in ['Графік погодинних відключень', 'Загальна інформація']:
             continue

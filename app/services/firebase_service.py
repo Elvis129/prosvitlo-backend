@@ -297,6 +297,92 @@ def send_to_address_users(
         return {'success': 0, 'failed': 0}
 
 
+def send_to_queue_users(
+    db,
+    queue: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, str]] = None
+) -> Dict[str, int]:
+    """
+    Відправка повідомлення користувачам за чергою
+    
+    Args:
+        db: Database session
+        queue: Номер черги (наприклад "6.1")
+        title: Заголовок повідомлення
+        body: Текст повідомлення
+        data: Додаткові дані (опціонально)
+    
+    Returns:
+        dict: {'success': кількість успішних, 'failed': кількість невдалих, 'device_ids': список пристроїв}
+    """
+    from app.models import DeviceToken, UserAddress
+    
+    try:
+        # Отримуємо device_id для цієї черги
+        user_addresses = db.query(UserAddress).filter(
+            UserAddress.queue == queue
+        ).all()
+        
+        logger.info(f"🔍 Пошук користувачів для черги: {queue}")
+        logger.info(f"📊 Знайдено адрес: {len(user_addresses)}")
+        
+        if not user_addresses:
+            logger.info(f"❌ Не знайдено користувачів для черги: {queue}")
+            return {'success': 0, 'failed': 0, 'device_ids': []}
+        
+        # Дедуплікація: один користувач може мати кілька адрес
+        device_ids = list(set([ua.device_id for ua in user_addresses]))
+        logger.info(f"📱 Device IDs (унікальних): {len(device_ids)}")
+        
+        # Отримуємо токени для цих пристроїв (тільки з увімкненими сповіщеннями)
+        tokens = db.query(DeviceToken).filter(
+            DeviceToken.device_id.in_(device_ids),
+            DeviceToken.notifications_enabled == True
+        ).all()
+        
+        logger.info(f"🔔 Знайдено токенів з увімкненими сповіщеннями: {len(tokens)}")
+        
+        if not tokens:
+            logger.info(f"❌ Немає пристроїв з увімкненими сповіщеннями для черги: {queue}")
+            # Але зберігаємо device_ids для історії
+            return {'success': 0, 'failed': 0, 'device_ids': device_ids}
+        
+        # Дедуплікація токенів
+        fcm_tokens = list(set([token.fcm_token for token in tokens]))
+        active_device_ids = list(set([token.device_id for token in tokens]))
+        
+        logger.info(f"📊 Унікальних токенів після дедуплікації: {len(fcm_tokens)}")
+        
+        # Відправляємо мультикаст повідомлення
+        logger.info(f"📤 Відправка пушу на {len(fcm_tokens)} пристроїв для черги {queue}")
+        result = send_push_to_multiple(fcm_tokens, title, body, data)
+        
+        # Видаляємо невалідні токени з бази
+        if 'invalid_tokens' in result and result['invalid_tokens']:
+            logger.info(f"🗑️ Видалення {len(result['invalid_tokens'])} невалідних токенів з бази...")
+            for invalid_token in result['invalid_tokens']:
+                token_to_delete = db.query(DeviceToken).filter(
+                    DeviceToken.fcm_token == invalid_token
+                ).first()
+                if token_to_delete:
+                    logger.info(f"🗑️ Видаляємо токен {token_to_delete.device_id} (невалідний)")
+                    db.delete(token_to_delete)
+            db.commit()
+        
+        # Додаємо device_ids для збереження в історію (ВСІ пристрої, навіть якщо notifications_enabled=0)
+        result['device_ids'] = device_ids
+        
+        logger.info(f"✅ Завершено відправку для черги {queue}: {result}")
+        return result
+    
+    except Exception as e:
+        logger.error(f"❌ Помилка відправки notification для черги {queue}: {e}")
+        logger.exception("Детальна інформація про помилку:")
+        return {'success': 0, 'failed': 0, 'device_ids': []}
+
+
 def send_to_all_users(
     db,
     title: str,
