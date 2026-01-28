@@ -304,18 +304,23 @@ def get_houses(city: str, street: str, search: Optional[str] = None) -> List[str
     ))
 
 
-def get_address_info(city: str, street: str, house: str) -> Optional[Dict]:
+def get_address_info(city: str, street: str, house: str, db = None, schedule_date = None) -> Optional[Dict]:
     """
-    Отримати повну інформацію про адресу
+    Отримати повну інформацію про адресу включаючи графік відключень
     
     Args:
         city: Назва міста
         street: Назва вулиці
         house: Номер будинку
+        db: Сесія бази даних (опціонально)
+        schedule_date: Дата графіка (опціонально, за замовчуванням сьогодні)
     
     Returns:
         Словник з інформацією про адресу або None
     """
+    from datetime import date as date_type, datetime
+    import json
+    
     addresses = load_addresses_from_github()
     
     if (city not in addresses or 
@@ -324,16 +329,61 @@ def get_address_info(city: str, street: str, house: str) -> Optional[Dict]:
         return None
     
     address_data = addresses[city][street][house]
+    queue = address_data.get("queue")
     
-    return {
+    result = {
         "city": city,
         "street": street,
         "house": house,
-        "queue": address_data.get("queue"),
+        "queue": queue,
         "source_url": address_data.get("source_url"),
-        # Тут додамо інформацію про відключення
-        "outage_status": None,  # Поки що None, потім додамо реальні дані
+        "outage_status": None,
     }
+    
+    # Якщо є БД і черга - отримуємо інформацію про відключення
+    if db and queue:
+        try:
+            from app.crud_schedules import get_schedule_by_date
+            
+            # Визначаємо дату
+            if schedule_date:
+                if isinstance(schedule_date, str):
+                    target_date = datetime.strptime(schedule_date, "%Y-%m-%d").date()
+                else:
+                    target_date = schedule_date
+            else:
+                target_date = date_type.today()
+            
+            # Отримуємо графік
+            schedule = get_schedule_by_date(db, target_date)
+            
+            if schedule and schedule.parsed_data:
+                # Парсимо дані графіка
+                if isinstance(schedule.parsed_data, str):
+                    queue_schedules = json.loads(schedule.parsed_data)
+                else:
+                    queue_schedules = schedule.parsed_data
+                
+                # Знаходимо інформацію для черги адреси
+                if queue in queue_schedules:
+                    queue_data = queue_schedules[queue]
+                    
+                    result["outage_status"] = {
+                        "date": str(target_date),
+                        "queue": queue,
+                        "schedule": queue_data
+                    }
+                    
+                    logger.info(f"Знайдено графік для черги {queue}: outages={len(queue_data.get('outages', []))}, possible={len(queue_data.get('possible', []))}")
+                else:
+                    logger.warning(f"Черга {queue} не знайдена в графіку для дати {target_date}")
+            else:
+                logger.info(f"Графік для дати {target_date} не знайдено або немає parsed_data")
+                
+        except Exception as e:
+            logger.error(f"Помилка при отриманні інформації про відключення: {e}")
+    
+    return result
 
 
 def search_addresses(query: str, limit: int = 50) -> List[Dict]:

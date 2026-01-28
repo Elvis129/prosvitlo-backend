@@ -141,13 +141,22 @@ async def get_outage_status(
             )
         
         # Конвертуємо списки в кортежі для сумісності
+        # Підтримуємо як старий формат {'1.1': [(1, 3)]}, так і новий {'1.1': {'outages': [(1, 3)], 'possible': [(5, 7)]}}
         queue_schedules_tuples = {}
         for q, intervals in queue_schedules.items():
-            queue_schedules_tuples[q] = [tuple(i) if isinstance(i, list) else i for i in intervals]
+            if isinstance(intervals, dict):
+                # Новий формат з outages/possible - зберігаємо структуру
+                queue_schedules_tuples[q] = {
+                    'outages': [tuple(i) if isinstance(i, list) else i for i in intervals.get('outages', [])],
+                    'possible': [tuple(i) if isinstance(i, list) else i for i in intervals.get('possible', [])]
+                }
+            else:
+                # Старий формат - список інтервалів (для сумісності)
+                queue_schedules_tuples[q] = [tuple(i) if isinstance(i, list) else i for i in intervals]
         
         # Отримуємо інтервали для черги користувача
         queue_clean = queue.replace(". підчерга", "").replace(" підчерга", "").strip()
-        user_intervals = queue_schedules_tuples.get(queue_clean, []) or queue_schedules_tuples.get(queue, [])
+        user_data = queue_schedules_tuples.get(queue_clean) or queue_schedules_tuples.get(queue)
         
         # ⭐ ДОДАЄМО проміжки з оголошень (AnnouncementOutage)
         from app.models import AnnouncementOutage
@@ -156,6 +165,16 @@ async def get_outage_status(
             AnnouncementOutage.queue == queue_clean,
             AnnouncementOutage.is_active == True
         ).all()
+        
+        # Визначаємо формат даних і об'єднуємо з announcement_outages
+        if isinstance(user_data, dict):
+            # Новий формат - об'єднуємо outages та possible
+            user_intervals = user_data.get('outages', []) + user_data.get('possible', [])
+        elif user_data:
+            # Старий формат - список кортежів
+            user_intervals = user_data
+        else:
+            user_intervals = []
         
         if announcement_outages:
             logger.info(f"📢 Знайдено {len(announcement_outages)} додаткових проміжків з оголошень для черги {queue_clean}")

@@ -18,11 +18,15 @@ lxml==5.1.0
 selenium==4.27.1
 webdriver-manager==4.0.2
 
-# Scheduling
-apscheduler==3.10.4
+# Image processing for schedule parsing
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+numpy==1.26.4
 
-# Firebase push notifications
-firebase-admin==6.4.0
+# Task scheduling
+APScheduler==3.10.4
+pytz==2024.1
 
-# Additional utilities
-python-multipart==0.0.6
+# Firebase for push notifications
+firebase-admin==6.5.0
+

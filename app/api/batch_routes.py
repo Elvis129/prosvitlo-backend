@@ -96,9 +96,18 @@ async def get_batch_status(
             logger.error(f"Помилка парсингу графіка: {e}")
     
     # Конвертуємо списки в кортежі
+    # Підтримуємо як старий формат {'1.1': [(1, 3)]}, так і новий {'1.1': {'outages': [(1, 3)], 'possible': [(5, 7)]}}
     queue_schedules_tuples = {}
     for q, intervals in queue_schedules.items():
-        queue_schedules_tuples[q] = [tuple(i) if isinstance(i, list) else i for i in intervals]
+        if isinstance(intervals, dict):
+            # Новий формат з outages/possible - зберігаємо структуру
+            queue_schedules_tuples[q] = {
+                'outages': [tuple(i) if isinstance(i, list) else i for i in intervals.get('outages', [])],
+                'possible': [tuple(i) if isinstance(i, list) else i for i in intervals.get('possible', [])]
+            }
+        else:
+            # Старий формат - список інтервалів (для сумісності)
+            queue_schedules_tuples[q] = [tuple(i) if isinstance(i, list) else i for i in intervals]
     
     # Поточна година (тільки для сьогодні)
     is_today = target_date == date.today()
@@ -164,9 +173,9 @@ async def get_batch_status(
         
         # Шукаємо інтервали для черги
         queue_clean = queue.replace(". підчерга", "").replace(" підчерга", "").strip()
-        user_intervals = queue_schedules_tuples.get(queue_clean, []) or queue_schedules_tuples.get(queue, [])
+        user_data = queue_schedules_tuples.get(queue_clean) or queue_schedules_tuples.get(queue)
         
-        if not user_intervals:
+        if not user_data:
             statuses.append(AddressStatus(
                 city=addr.city,
                 street=addr.street,
@@ -180,12 +189,20 @@ async def get_batch_status(
             ))
             continue
         
-        # Обробляємо інтервали (логіка як у get_outage_status)
+        # Обробляємо інтервали (підтримка старого та нового формату)
         all_outages = []
         has_power = True
         message = f"Ваша черга: {queue}."
         
-        for interval in user_intervals:
+        # Визначаємо формат даних
+        if isinstance(user_data, dict):
+            # Новий формат - об'єднуємо outages та possible для перевірки статусу
+            all_intervals = user_data.get('outages', []) + user_data.get('possible', [])
+        else:
+            # Старий формат - список кортежів
+            all_intervals = user_data
+        
+        for interval in all_intervals:
             start_hour, end_hour = interval
             all_outages.append(OutageInterval(
                 start_hour=start_hour,

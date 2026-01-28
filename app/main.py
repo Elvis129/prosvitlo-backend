@@ -166,6 +166,19 @@ async def root():
     }
 
 
+@app.get("/api/v1/admin/trigger-update-schedules")
+async def trigger_update_schedules():
+    """Адміністративний endpoint для ручного запуску оновлення графіків"""
+    from app.scheduler import update_schedules
+    import threading
+    
+    # Запускаємо в окремому потоці щоб не блокувати запит
+    thread = threading.Thread(target=update_schedules)
+    thread.start()
+    
+    return {"status": "started", "message": "Оновлення графіків запущено"}
+
+
 @app.get("/health")
 async def health_check():
     """Перевірка здоров'я сервера"""

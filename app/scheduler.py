@@ -25,6 +25,8 @@ scheduler = BackgroundScheduler(timezone='Europe/Kiev')
 
 # Зберігаємо хеші останніх оголошень щоб не спамити
 last_announcement_hashes = set()
+# Зберігаємо хеші окремих параграфів щоб уникнути часткового дублювання
+last_sent_paragraphs = set()
 
 
 def generate_outage_hash(outage):
@@ -67,7 +69,7 @@ def cleanup_old_schedules():
         db.close()
 
 
-def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end_hour: int):
+def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end_hour: int, is_possible: bool = False):
     """
     Відправляє push для конкретної черги
     Викликається автоматично за 10 хвилин до відключення
@@ -77,9 +79,11 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
         queue: Номер черги (наприклад "6.1")
         start_hour: Година початку відключення
         end_hour: Година закінчення відключення
+        is_possible: True якщо це можливе відключення (сіра клітинка)
     """
     # КРИТИЧНО: Виводимо в stdout для перевірки чи функція взагалі викликається
-    print(f"🔴 send_queue_notification ВИКЛИКАНО: date={schedule_date}, queue={queue}, start={start_hour}, end={end_hour}", flush=True)
+    notif_type = "МОЖЛИВЕ" if is_possible else "ТОЧНЕ"
+    print(f"🔴 send_queue_notification ВИКЛИКАНО: date={schedule_date}, queue={queue}, start={start_hour}, end={end_hour}, type={notif_type}", flush=True)
     
     from app.services import firebase_service
     from app import crud_notifications
@@ -145,8 +149,12 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
         print(f"🔴 send_queue_notification: створено QueueNotification для дедуплікації", flush=True)
         
         # Відправка пушу
-        title = f"⚡ Відключення черги {queue}"
-        body = f"Сьогодні о {start_hour:02d}:00 - {end_hour:02d}:00"
+        if is_possible:
+            title = f"⚠️ Можливе відключення черги {queue}"
+            body = f"Сьогодні о {start_hour:02d}:00 - {end_hour:02d}:00 можливе відключення"
+        else:
+            title = f"⚡ Відключення черги {queue}"
+            body = f"Сьогодні о {start_hour:02d}:00 - {end_hour:02d}:00"
         
         logger.info(f"📤 Відправка пушу для черги {queue} о {start_hour}:00-{end_hour}:00")
         print(f"🔴 send_queue_notification: викликаємо firebase_service.send_to_queue_users", flush=True)
@@ -157,11 +165,13 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
             title=title,
             body=body,
             data={
-                "type": "queue",
+                "type": "queue_possible" if is_possible else "queue",
+                "category": "scheduled",
                 "queue": queue,
                 "date": schedule_date,
                 "start_hour": str(start_hour),
-                "end_hour": str(end_hour)
+                "end_hour": str(end_hour),
+                "is_possible": str(is_possible)
             }
         )
         
@@ -199,6 +209,71 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
         db.close()
 
 
+def _create_notification_job(schedule_date: str, schedule_date_obj, current_time, queue: str, interval: tuple, is_possible: bool) -> int:
+    """
+    Допоміжна функція для створення notification job
+    
+    Returns:
+        1 якщо job створено, 0 якщо пропущено
+    """
+    start_hour, end_hour = interval
+    
+    # ⚠️ ВАЖЛИВО: start_hour/end_hour - це КИЇВСЬКИЙ час!
+    # Створюємо datetime в київській зоні, потім конвертуємо в naive для БД
+    outage_time_kyiv = KYIV_TZ.localize(
+        datetime.combine(schedule_date_obj, datetime.min.time()).replace(hour=int(start_hour), minute=0)
+    )
+    outage_time = outage_time_kyiv.replace(tzinfo=None)  # Naive для БД
+    
+    # Час відправки пушу (за 10 хвилин) - також в київському часі
+    notification_time_kyiv = outage_time_kyiv - timedelta(minutes=10)
+    notification_time = notification_time_kyiv.replace(tzinfo=None)  # Naive для порівняння з current_time
+    
+    # Відправляємо ТІЛЬКИ якщо час ще не минув
+    if notification_time <= current_time:
+        # Якщо вже пізно - перевіряємо чи відключення ще не закінчилось
+        # end_hour може бути 24 (опівніч) - обробляємо як наступний день 00:00
+        if end_hour == 24:
+            outage_end_time_kyiv = KYIV_TZ.localize(
+                datetime.combine(schedule_date_obj + timedelta(days=1), datetime.min.time())
+            )
+        else:
+            outage_end_time_kyiv = KYIV_TZ.localize(
+                datetime.combine(schedule_date_obj, datetime.min.time()).replace(hour=int(end_hour), minute=0)
+            )
+        outage_end_time = outage_end_time_kyiv.replace(tzinfo=None)
+        
+        if outage_end_time > current_time:
+            # Відключення ще триває - відправляємо ОДРАЗУ
+            notif_type = "можливе" if is_possible else "точне"
+            logger.info(f"⚡ Негайна відправка для черги {queue} ({notif_type}, вже о {start_hour}:00)")
+            send_queue_notification(schedule_date, queue, start_hour, end_hour, is_possible)
+        else:
+            logger.info(f"⏭️ Пропуск черги {queue} о {start_hour}:00 (вже минуло)")
+        return 0
+    
+    # Створюємо динамічний job
+    job_type = "possible" if is_possible else "outage"
+    job_id = f"queue_{schedule_date}_{queue}_{start_hour}_{job_type}"
+    
+    try:
+        # ⚠️ ВАЖЛИВО: Scheduler працює в київській зоні, передаємо naive datetime
+        scheduler.add_job(
+            send_queue_notification,
+            'date',
+            run_date=notification_time,  # Naive київський datetime
+            args=[schedule_date, queue, start_hour, end_hour, is_possible],
+            id=job_id,
+            replace_existing=True
+        )
+        notif_type = "можливе" if is_possible else "точне"
+        logger.info(f"✅ Заплановано пуш ({notif_type}) для черги {queue} на {notification_time.strftime('%d.%m %H:%M')} (Київ)")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Помилка при плануванні job для черги {queue}: {e}")
+        return 0
+
+
 def schedule_queue_notifications(schedule_date: str, parsed_data: dict):
     """
     Створює динамічні jobs для кожної черги в графіку
@@ -206,7 +281,9 @@ def schedule_queue_notifications(schedule_date: str, parsed_data: dict):
     
     Args:
         schedule_date: Дата графіка (YYYY-MM-DD)
-        parsed_data: Розпарсений графік {"6.1": [[12, 16]], ...}
+        parsed_data: Розпарсений графік 
+            Старий формат: {"6.1": [[12, 16]], ...}
+            Новий формат: {"6.1": {"outages": [(12, 16)], "possible": [(8, 10)]}, ...}
     """
     try:
         logger.info(f"🔹 ПОЧАТОК schedule_queue_notifications для {schedule_date}")
@@ -234,61 +311,36 @@ def schedule_queue_notifications(schedule_date: str, parsed_data: dict):
             parsed_data = json.loads(parsed_data)
         
         jobs_created = 0
-        for queue, intervals in parsed_data.items():
-            logger.info(f"🔹 Обробка черги {queue}, intervals: {intervals}")
-            for interval in intervals:
-                start_hour, end_hour = interval
+        for queue, queue_data in parsed_data.items():
+            logger.info(f"🔹 Обробка черги {queue}, дані: {queue_data}")
+            
+            # Підтримка нового формату з окремими outages/possible
+            if isinstance(queue_data, dict) and 'outages' in queue_data:
+                # Новий формат: {"outages": [...], "possible": [...]}
+                outages_intervals = queue_data.get('outages', [])
+                possible_intervals = queue_data.get('possible', [])
+                logger.info(f"  📘 Новий формат: відключення {outages_intervals}, можливі {possible_intervals}")
                 
-                # ⚠️ ВАЖЛИВО: start_hour/end_hour - це КИЇВСЬКИЙ час!
-                # Створюємо datetime в київській зоні, потім конвертуємо в naive для БД
-                outage_time_kyiv = KYIV_TZ.localize(
-                    datetime.combine(schedule_date_obj, datetime.min.time()).replace(hour=int(start_hour), minute=0)
-                )
-                outage_time = outage_time_kyiv.replace(tzinfo=None)  # Naive для БД
-                
-                # Час відправки пушу (за 10 хвилин) - також в київському часі
-                notification_time_kyiv = outage_time_kyiv - timedelta(minutes=10)
-                notification_time = notification_time_kyiv.replace(tzinfo=None)  # Naive для порівняння з current_time
-                
-                # Відправляємо ТІЛЬКИ якщо час ще не минув
-                if notification_time <= current_time:
-                    # Якщо вже пізно - перевіряємо чи відключення ще не закінчилось
-                    # end_hour може бути 24 (опівніч) - обробляємо як наступний день 00:00
-                    if end_hour == 24:
-                        outage_end_time_kyiv = KYIV_TZ.localize(
-                            datetime.combine(schedule_date_obj + timedelta(days=1), datetime.min.time())
-                        )
-                    else:
-                        outage_end_time_kyiv = KYIV_TZ.localize(
-                            datetime.combine(schedule_date_obj, datetime.min.time()).replace(hour=int(end_hour), minute=0)
-                        )
-                    outage_end_time = outage_end_time_kyiv.replace(tzinfo=None)
-                    
-                    if outage_end_time > current_time:
-                        # Відключення ще триває - відправляємо ОДРАЗУ
-                        logger.info(f"⚡ Негайна відправка для черги {queue} (вже о {start_hour}:00)")
-                        send_queue_notification(schedule_date, queue, start_hour, end_hour)
-                    else:
-                        logger.info(f"⏭️ Пропуск черги {queue} о {start_hour}:00 (вже минуло)")
-                    continue
-                
-                # Створюємо динамічний job
-                job_id = f"queue_{schedule_date}_{queue}_{start_hour}"
-                
-                try:
-                    # ⚠️ ВАЖЛИВО: Scheduler працює в київській зоні, передаємо naive datetime
-                    scheduler.add_job(
-                        send_queue_notification,
-                        'date',
-                        run_date=notification_time,  # Naive київський datetime
-                        args=[schedule_date, queue, start_hour, end_hour],
-                        id=job_id,
-                        replace_existing=True
+                # Обробляємо точні відключення
+                for interval in outages_intervals:
+                    jobs_created += _create_notification_job(
+                        schedule_date, schedule_date_obj, current_time, queue, interval, is_possible=False
                     )
-                    jobs_created += 1
-                    logger.info(f"✅ Заплановано пуш для черги {queue} на {notification_time.strftime('%d.%m %H:%M')} (Київ)")
-                except Exception as e:
-                    logger.error(f"❌ Помилка при плануванні job для черги {queue}: {e}")
+                
+                # Обробляємо можливі відключення
+                for interval in possible_intervals:
+                    jobs_created += _create_notification_job(
+                        schedule_date, schedule_date_obj, current_time, queue, interval, is_possible=True
+                    )
+            else:
+                # Старий формат: просто список інтервалів
+                intervals = queue_data
+                logger.info(f"  📗 Старий формат: {intervals}")
+                
+                for interval in intervals:
+                    jobs_created += _create_notification_job(
+                        schedule_date, schedule_date_obj, current_time, queue, interval, is_possible=False
+                    )
         
         logger.info(f"🔹 ЗАВЕРШЕНО schedule_queue_notifications: створено {jobs_created} jobs")
     except Exception as e:
@@ -364,8 +416,9 @@ def check_and_notify_announcements():
     Перевіряє загальні оголошення з сайту кожні 5 хвилин
     Відправляє push ТІЛЬКИ якщо є НОВІ оголошення
     + Витягує часові проміжки для черг та створює додаткові пуші
+    + Фільтрує вже відправлені параграфи для запобігання дублювання
     """
-    global last_announcement_hashes
+    global last_announcement_hashes, last_sent_paragraphs
     from app.services import firebase_service
     from app.services.telegram_service import get_telegram_service
     from app import crud_notifications
@@ -387,12 +440,41 @@ def check_and_notify_announcements():
             if content_hash in last_announcement_hashes:
                 continue
             
+            # ⭐ НОВА ЛОГІКА: Фільтруємо вже відправлені параграфи з повідомлення
+            full_body = announcement.get('full_body', announcement['body'])
+            paragraphs = full_body.split('\n\n')
+            
+            # Знаходимо нові параграфи (які ще не відправляли)
+            new_paragraphs = []
+            for para in paragraphs:
+                para_stripped = para.strip()
+                if not para_stripped or len(para_stripped) < 10:
+                    continue
+                
+                # Генеруємо хеш параграфа
+                para_hash = hashlib.md5(para_stripped.encode()).hexdigest()
+                
+                # Якщо параграф новий - додаємо
+                if para_hash not in last_sent_paragraphs:
+                    new_paragraphs.append(para_stripped)
+                    last_sent_paragraphs.add(para_hash)
+                else:
+                    logger.info(f"⏭️ Пропущено вже відправлений параграф: {para_stripped[:50]}...")
+            
+            # Якщо всі параграфи вже були відправлені - пропускаємо оголошення
+            if not new_paragraphs:
+                logger.info(f"ℹ️ Всі параграфи в оголошенні '{announcement['title']}' вже були відправлені")
+                last_announcement_hashes.add(content_hash)
+                continue
+            
+            # Формуємо текст тільки з НОВИХ параграфів
+            filtered_body = '\n\n'.join(new_paragraphs)
+            
             # Нове оголошення - відправляємо push ВСІМ
             title = announcement['title']
-            full_body = announcement.get('full_body', announcement['body'])
             
-            # Для push обмежуємо текст (250 символів)
-            push_body = full_body[:250] + '...' if len(full_body) > 250 else full_body
+            # Для push обмежуємо текст (500 символів для повноти інформації)
+            push_body = filtered_body[:500] + '...' if len(filtered_body) > 500 else filtered_body
             
             result = firebase_service.send_to_all_users(
                 db=db,
@@ -400,29 +482,30 @@ def check_and_notify_announcements():
                 body=push_body,
                 data={
                     "type": "announcement",
+                    "category": "general",
                     "source": announcement['source']
                 }
             )
             
             if result['success'] > 0:
-                # Зберігаємо ПОВНИЙ текст в історію
+                # Зберігаємо ВІДФІЛЬТРОВАНИЙ текст в історію
                 crud_notifications.create_notification(
                     db=db,
                     notification_type="all",
                     category="general",
                     title=title,
-                    body=full_body
+                    body=filtered_body
                 )
                 
                 # Запам'ятовуємо що відправили
                 last_announcement_hashes.add(content_hash)
                 
-                # Відправляємо ПОВНИЙ текст в Telegram канал
+                # Відправляємо ВІДФІЛЬТРОВАНИЙ текст в Telegram канал
                 telegram = get_telegram_service()
                 if telegram:
                     telegram_success = telegram.send_announcement(
                         title=title,
-                        body=full_body,
+                        body=filtered_body,
                         source=announcement['source']
                     )
                     if telegram_success:
@@ -433,8 +516,8 @@ def check_and_notify_announcements():
                     logger.warning(f"⚠️ Telegram сервіс не ініціалізований")
                 logger.info(f"✅ Відправлено оголошення ВСІМ: {title}")
                 
-                # ⭐ НОВИЙ ФУНКЦІОНАЛ: Парсимо часові проміжки для черг
-                queue_times = parse_queue_times_from_announcement(full_body)
+                # ⭐ ФУНКЦІОНАЛ: Парсимо часові проміжки для черг
+                queue_times = parse_queue_times_from_announcement(filtered_body)
                 if queue_times:
                     logger.info(f"🕐 Знайдено {len(queue_times)} часових проміжків для черг в оголошенні")
                     
@@ -474,7 +557,7 @@ def check_and_notify_announcements():
                                         queue=queue,
                                         start_hour=start_hour,
                                         end_hour=end_hour,
-                                        announcement_text=full_body[:500],  # Зберігаємо перші 500 символів
+                                        announcement_text=filtered_body[:500],  # Зберігаємо перші 500 символів
                                         is_active=True
                                     )
                                     db.add(announcement_outage)
@@ -517,6 +600,14 @@ def check_and_notify_announcements():
         # Очищаємо старі хеші (залишаємо останні 100)
         if len(last_announcement_hashes) > 100:
             last_announcement_hashes.clear()
+        
+        # Очищаємо старі параграфи (залишаємо останні 200)
+        if len(last_sent_paragraphs) > 200:
+            # Видаляємо половину найстаріших
+            to_keep = list(last_sent_paragraphs)[-100:]
+            last_sent_paragraphs.clear()
+            last_sent_paragraphs.update(to_keep)
+            logger.info(f"🧹 Очищено кеш параграфів, залишено {len(last_sent_paragraphs)}")
             
     except Exception as e:
         logger.error(f"Помилка при перевірці оголошень: {e}")
@@ -535,7 +626,7 @@ def update_schedules():
     new_dates_added = []  # Відстежуємо нові дати
     
     try:
-        logger.info("Початок оновлення графіків...")
+        logger.info("🔄 [v4-COLOR-PARSER] Початок оновлення графіків з підтримкою парсингу кольорів...")
         
         # Перевіряємо доступність графіків
         availability = check_schedule_availability()
@@ -556,11 +647,11 @@ def update_schedules():
         for schedule_info in schedules:
             schedule_date = schedule_info.get('date')
             image_url = schedule_info.get('image_url')
-            recognized_text = schedule_info.get('recognized_text')
+            recognized_text = schedule_info.get('recognized_text', '')
             content_hash = schedule_info.get('content_hash')
 
-            if not schedule_date or not recognized_text:
-                continue
+            if not schedule_date:
+                continue  # Видалено перевірку recognized_text - color parser не потребує тексту
             
             local_image_path = download_schedule_image_sync(image_url)
             if local_image_path and local_image_path != image_url:
@@ -584,28 +675,61 @@ def update_schedules():
                     import json
                     try:
                         parsed_schedule = json.loads(existing.parsed_data) if isinstance(existing.parsed_data, str) else existing.parsed_data
+                        
+                        # ⭐ ВАЖЛИВО: якщо в БД немає parsed_data - парсимо заново
+                        if not parsed_schedule:
+                            logger.warning(f"⚠️ Графік для {schedule_date} в БД але без parsed_data - перепарсуємо")
+                            schedule_needs_update = True
+                            try:
+                                from app.scraper.schedule_color_parser import parse_schedule_from_image
+                                parsed_schedule = parse_schedule_from_image(image_url)
+                                logger.info(f"✅ [v4] Color парсер знайшов {len(parsed_schedule)} підчерг (fallback)")
+                            except Exception as e:
+                                logger.error(f"❌ [v4] Color parser помилка (fallback): {e}")
+                                parsed_schedule = {}
+                        
                     except Exception as e:
                         logger.error(f"Помилка парсингу даних з БД: {e}")
-                        # Якщо не вдалось витягти з БД - парсимо заново
-                        parsed_schedule = parse_queue_schedule(recognized_text)
+                        # Якщо не вдалось витягти з БД - парсимо заново COLOR-BASED методом
+                        schedule_needs_update = True
+                        logger.info(f"🎨 [v4] Використовую color-based парсер (БД fallback)")
+                        try:
+                            from app.scraper.schedule_color_parser import parse_schedule_from_image
+                            parsed_schedule = parse_schedule_from_image(image_url)
+                        except Exception as parse_err:
+                            logger.error(f"❌ [v4] Color parser помилка: {parse_err}")
+                            parsed_schedule = {}
                 else:
                     schedule_changed = True
                     schedule_needs_update = True
-                    logger.info(f"Графік для {schedule_date} ЗМІНИВСЯ - оновлюємо")
-                    parsed_schedule = parse_queue_schedule(recognized_text)
+                    logger.info(f"Графік для {schedule_date} ЗМІНИВСЯ - парсимо заново")
+                    # Одразу використовуємо color-based парсер
+                    logger.info(f"🎨 [v4] Використовую color-based парсер (зміна графіка)")
+                    try:
+                        from app.scraper.schedule_color_parser import parse_schedule_from_image
+                        parsed_schedule = parse_schedule_from_image(image_url)
+                        logger.info(f"✅ [v4] Color парсер знайшов {len(parsed_schedule)} підчерг")
+                    except Exception as e:
+                        logger.error(f"❌ [v4] Color parser помилка: {e}")
+                        parsed_schedule = {}
             else:
-                # Нового графіка немає в БД
+                # Нового графіка немає в БД - парсимо color-based методом
                 schedule_changed = True
                 schedule_needs_update = True
-                parsed_schedule = parse_queue_schedule(recognized_text)
+                logger.info(f"🎨 [v4] Новий графік {schedule_date}, використовую color-based парсер")
+                try:
+                    from app.scraper.schedule_color_parser import parse_schedule_from_image
+                    parsed_schedule = parse_schedule_from_image(image_url)
+                    logger.info(f"✅ [v4] Color парсер знайшов {len(parsed_schedule)} підчерг для {schedule_date}")
+                except Exception as e:
+                    logger.error(f"❌ [v4] Color parser помилка: {e}")
+                    parsed_schedule = {}
+                
+                logger.info(f"🔍 [v4] parsed_schedule: {len(parsed_schedule) if parsed_schedule else 0} підчерг")
                 # Якщо це майбутня дата (завтра або пізніше) - відправимо повідомлення
                 if schedule_date >= today:
                     new_dates_added.append(schedule_date)
                     logger.info(f"📅 НОВИЙ графік на {schedule_date} буде додано")
-            
-            if not parsed_schedule:
-                logger.warning(f"Не вдалось отримати parsed_schedule для {schedule_date}")
-                continue
             
             # Оновлюємо БД тільки якщо графік змінився
             if schedule_needs_update:
@@ -638,13 +762,17 @@ def update_schedules():
             
             # ⭐ ЗАВЖДИ створюємо динамічні jobs для черг (навіть якщо графік не змінився)
             # Це потрібно щоб відновити jobs після рестарту сервера
-            try:
-                logger.info(f"📅 Викликаємо schedule_queue_notifications для {schedule_date}")
-                schedule_queue_notifications(str(schedule_date), parsed_schedule)
-                logger.info(f"✅ schedule_queue_notifications завершено для {schedule_date}")
-            except Exception as e:
-                logger.error(f"❌ Помилка в schedule_queue_notifications для {schedule_date}: {e}")
-                logger.exception("Детальна інформація про помилку:")
+            # ВАЖЛИВО: Якщо parsed_schedule порожній {} - jobs не створюються
+            if parsed_schedule:  # Тільки якщо є дані
+                try:
+                    logger.info(f"📅 Викликаємо schedule_queue_notifications для {schedule_date}")
+                    schedule_queue_notifications(str(schedule_date), parsed_schedule)
+                    logger.info(f"✅ schedule_queue_notifications завершено для {schedule_date}")
+                except Exception as e:
+                    logger.error(f"❌ Помилка в schedule_queue_notifications для {schedule_date}: {e}")
+                    logger.exception("Детальна інформація про помилку:")
+            else:
+                logger.info(f"⏭️ Пропускаємо створення jobs для {schedule_date} - немає текстової версії")
         
         # Відправляємо сповіщення якщо є НОВІ дати (завтра, післязавтра)
         if new_dates_added:
@@ -1038,6 +1166,7 @@ def send_outage_notification(outage_id: int, outage_type: str):
                 body=body,
                 data={
                     "type": outage_type,
+                    "category": outage_type,
                     "city": outage.city,
                     "street": outage.street,
                     "house_number": house,
@@ -1463,6 +1592,7 @@ def check_upcoming_outages_and_notify():
                             body=body,
                             data={
                                 "type": "queue_outage",
+                                "category": "scheduled",
                                 "queue": queue,
                                 "hour": str(start_hour)
                             }
@@ -1536,7 +1666,10 @@ def notify_schedule_update(schedule_date=None):
             db=db,
             title=title,
             body=body,
-            data={"type": "schedule_update"}
+            data={
+                "type": "schedule_update",
+                "category": "general"
+            }
         )
         
         if result['success'] > 0:
@@ -1739,6 +1872,9 @@ def start_scheduler():
     """
     from app.config import settings
     
+    print(f"🔵 [SCHEDULER] start_scheduler ВИКЛИКАНО", flush=True)
+    logger.info("🔵 [SCHEDULER] start_scheduler ВИКЛИКАНО")
+    
     # Не виконуємо одразу при старті - дозволяємо uvicorn швидко стартувати
     # Перше оновлення відбудеться через 10 секунд після запуску
     from datetime import datetime, timedelta
@@ -1746,13 +1882,17 @@ def start_scheduler():
     
     check_interval = settings.CHECK_INTERVAL_MINUTES
     
+    print(f"🚀 [SCHEDULER] Запуск scheduler з інтервалом {check_interval} хвилин", flush=True)
     logger.info(f"🚀 Запуск scheduler з інтервалом {check_interval} хвилин")
     
     # ⭐ Графіки - перший запуск через 10с, потім з заданим інтервалом
     try:
+        print(f"🔵 [SCHEDULER] Додаємо job 'schedules' з інтервалом {check_interval} хв, перший запуск: {start_time}", flush=True)
         scheduler.add_job(update_schedules, 'interval', minutes=check_interval, id='schedules', next_run_time=start_time)
+        print(f"✅ [SCHEDULER] Job 'schedules' успішно створено", flush=True)
         logger.info(f"✅ Job 'schedules' створено (інтервал: {check_interval} хв)")
     except Exception as e:
+        print(f"❌ [SCHEDULER] Помилка створення job 'schedules': {e}", flush=True)
         logger.error(f"❌ Помилка створення job 'schedules': {e}")
         logger.exception("Детальна інформація:")
     
@@ -1787,7 +1927,16 @@ def start_scheduler():
     # Очищення старих повідомлень - щодня о 3:00
     scheduler.add_job(cleanup_old_notifications_job, 'cron', hour=3, minute=0, id='cleanup_notifications')
     
+    print(f"🔵 [SCHEDULER] Викликаємо scheduler.start()", flush=True)
     scheduler.start()
+    print(f"✅ [SCHEDULER] scheduler.start() завершено успішно", flush=True)
+    
+    # Виводимо список всіх jobs
+    jobs = scheduler.get_jobs()
+    print(f"📋 [SCHEDULER] Всього jobs: {len(jobs)}", flush=True)
+    for job in jobs:
+        print(f"  - {job.id}: {job.next_run_time}", flush=True)
+    
     logger.info("=" * 60)
     logger.info("✅ Планувальник запущено:")
     logger.info(f"  📅 Графіки: кожні {check_interval} хвилин (+ динамічні jobs для черг)")
@@ -1823,3 +1972,5 @@ def get_scheduler_status():
         "running": scheduler.running,
         "jobs": jobs_info
     }
+# Build version: 1769416182
+# Mon Jan 26 10:35:56 EET 2026

@@ -114,7 +114,8 @@ async def api_get_houses(
 async def api_get_address_info(
     city: str = Query(..., description="Назва міста"),
     street: str = Query(..., description="Назва вулиці"),
-    house: str = Query(..., description="Номер будинку")
+    house: str = Query(..., description="Номер будинку"),
+    schedule_date: Optional[str] = Query(None, description="Дата графіка у форматі YYYY-MM-DD (опціонально)")
 ):
     """
     Отримати повну інформацію про адресу включаючи чергу та статус відключень
@@ -123,11 +124,20 @@ async def api_get_address_info(
     - city: назва міста (обов'язково)
     - street: назва вулиці (обов'язково)
     - house: номер будинку (обов'язково)
+    - schedule_date: дата графіка у форматі YYYY-MM-DD (опціонально, за замовчуванням сьогодні)
     
-    Приклад: /api/v1/addresses/info?city=Хмельницький&street=вул. Героїв Майдану&house=10
+    Приклад: /api/v1/addresses/info?city=Хмельницький&street=вул. Героїв Майдану&house=10&schedule_date=2026-01-26
     """
+    from app.database import get_db
+    from fastapi import Depends
+    from sqlalchemy.orm import Session
+    
+    # Отримуємо БД
+    db_gen = get_db()
+    db = next(db_gen)
+    
     try:
-        info = get_address_info(city=city, street=street, house=house)
+        info = get_address_info(city=city, street=street, house=house, db=db, schedule_date=schedule_date)
         
         if not info:
             raise HTTPException(
