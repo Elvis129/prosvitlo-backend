@@ -37,6 +37,7 @@ class OutageInterval(BaseModel):
     start_hour: float  # Може бути 17.5 для 17:30
     end_hour: float
     label: str  # Наприклад "08:00 - 12:00"
+    is_possible: bool = False  # True для можливих відключень, False для гарантованих
 
 
 class OutageStatusResponse(BaseModel):
@@ -234,10 +235,17 @@ async def get_outage_status(
             
             label = f"{start_h:02d}:{start_m:02d} - {end_h:02d}:{end_m:02d}"
             
+            # Визначаємо чи це можливе відключення
+            is_possible_outage = False
+            if isinstance(user_data, dict):
+                # Перевіряємо чи інтервал з масиву possible
+                is_possible_outage = (start, end) in user_data.get('possible', [])
+            
             all_outages.append(OutageInterval(
                 start_hour=start,
                 end_hour=end,
-                label=label
+                label=label,
+                is_possible=is_possible_outage
             ))
         
         # Сортуємо за часом початку

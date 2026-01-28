@@ -1,18 +1,19 @@
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.orm import Session
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Any
+import logging
+import hashlib
+import json
+import pytz
+
 from app.scraper.schedule_parser import fetch_schedule_images, parse_queue_schedule
 from app.scraper.announcements_parser import fetch_announcements, check_schedule_availability
 from app.utils.image_downloader_sync import download_schedule_image_sync
 from app.scraper.outage_parser import fetch_all_emergency_outages, fetch_all_planned_outages
 from app import crud_schedules, crud_outages
-from sqlalchemy.orm import Session
 from app.models import EmergencyOutage, PlannedOutage
 from app.database import SessionLocal
-import logging
-from datetime import date, datetime, timedelta
-import hashlib
-import json
-import pytz
-from typing import List, Dict, Any
 
 # Київська часова зона
 KYIV_TZ = pytz.timezone('Europe/Kiev')

@@ -40,6 +40,7 @@ class OutageInterval(BaseModel):
     start_hour: float
     end_hour: float
     label: str
+    is_possible: bool = False  # True для можливих відключень, False для гарантованих
 
 
 class AddressStatus(BaseModel):
@@ -204,10 +205,18 @@ async def get_batch_status(
         
         for interval in all_intervals:
             start_hour, end_hour = interval
+            
+            # Визначаємо чи це можливе відключення
+            is_possible_outage = False
+            if isinstance(user_data, dict):
+                # Перевіряємо чи інтервал з масиву possible
+                is_possible_outage = interval in user_data.get('possible', [])
+            
             all_outages.append(OutageInterval(
                 start_hour=start_hour,
                 end_hour=end_hour,
-                label=f"{int(start_hour):02d}:{int((start_hour % 1) * 60):02d} - {int(end_hour):02d}:{int((end_hour % 1) * 60):02d}"
+                label=f"{int(start_hour):02d}:{int((start_hour % 1) * 60):02d} - {int(end_hour):02d}:{int((end_hour % 1) * 60):02d}",
+                is_possible=is_possible_outage
             ))
             
             # Перевіряємо чи зараз відключення (тільки для сьогодні)
