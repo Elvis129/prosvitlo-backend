@@ -7,10 +7,15 @@ import hashlib
 import json
 import pytz
 
-from app.scraper.schedule_parser import fetch_schedule_images, parse_queue_schedule
-from app.scraper.announcements_parser import fetch_announcements, check_schedule_availability
+from app.scraper.providers.hoe import (
+    fetch_schedule_images,
+    parse_queue_schedule,
+    fetch_announcements,
+    check_schedule_availability,
+    fetch_all_emergency_outages,
+    fetch_all_planned_outages
+)
 from app.utils.image_downloader_sync import download_schedule_image_sync
-from app.scraper.outage_parser import fetch_all_emergency_outages, fetch_all_planned_outages
 from app import crud_schedules, crud_outages
 from app.models import EmergencyOutage, PlannedOutage
 from app.database import SessionLocal

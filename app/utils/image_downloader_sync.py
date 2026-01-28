@@ -103,7 +103,7 @@ def check_and_redownload_missing_images(db) -> int:
                 
                 # Пробуємо знайти оригінальний URL в альтернативних джерелах
                 # Якщо немає - можна спробувати завантажити з hoe.com.ua знову
-                from app.scraper.schedule_parser import fetch_schedule_images
+                from app.scraper.providers.hoe import fetch_schedule_images
                 
                 fresh_schedules = fetch_schedule_images()
                 for fresh_schedule in fresh_schedules:

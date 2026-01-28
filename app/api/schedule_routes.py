@@ -10,7 +10,7 @@ import json
 import pytz
 
 from app.database import get_db
-from app.scraper.schedule_parser import fetch_schedule_images, parse_queue_schedule
+from app.scraper.providers.hoe import fetch_schedule_images, parse_queue_schedule
 from app import crud_schedules
 
 # Київський часовий пояс

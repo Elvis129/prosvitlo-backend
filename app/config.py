@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     # Check interval: 5 for frequent checks (every 5 minutes), 60 for hourly checks
     CHECK_INTERVAL_MINUTES: int = 60
     
+    # ===== Multi-region support =====
+    # Supported regions: hoe (Хмельницька), voe (Вінницька)
+    ENABLED_REGIONS: List[str] = ["hoe"]  # За замовчуванням тільки HOE
+    
+    # HOE (Хмельницькобленерго) - завжди увімкнено
+    HOE_ENABLED: bool = True
+    
+    # VOE (Вінницяобленерго) - вимкнено до готовності
+    VOE_ENABLED: bool = False
+    VOE_EMERGENCY_URL: str = "https://www.voe.com.ua/disconnection/emergency"
+    VOE_PLANNED_URL: str = "https://www.voe.com.ua/disconnection/planned"
+    VOE_SCHEDULE_URL: str = "https://www.voe.com.ua/informatsiya-pro-cherhy-hrafika-pohodynnykh-vidklyuchen-hpv-1"
+    
     # Scraper
     HOE_URL: str = "https://hoe.com.ua/page/pogodinni-vidkljuchennja"
     SCRAPER_TIMEOUT: int = 30

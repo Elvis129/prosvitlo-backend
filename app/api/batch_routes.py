@@ -12,7 +12,7 @@ import pytz
 
 from app.database import get_db
 from app.services.address_service import get_address_info
-from app.scraper.schedule_parser import parse_queue_schedule
+from app.scraper.providers.hoe import parse_queue_schedule
 from app import crud_schedules
 
 router = APIRouter()
