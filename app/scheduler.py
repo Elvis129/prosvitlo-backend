@@ -619,6 +619,7 @@ def check_and_notify_announcements():
 def update_schedules():
     """
     Оновлює графіки кожні 5 хвилин
+    Використовує color-based parser для аналізу зображень графіків
     Перезаписує ТІЛЬКИ якщо дані змінилися (перевірка по хешу)
     Відправляє повідомлення про НОВІ графіки (нові дати)
     """
@@ -648,11 +649,10 @@ def update_schedules():
         for schedule_info in schedules:
             schedule_date = schedule_info.get('date')
             image_url = schedule_info.get('image_url')
-            recognized_text = schedule_info.get('recognized_text', '')
             content_hash = schedule_info.get('content_hash')
 
             if not schedule_date:
-                continue  # Видалено перевірку recognized_text - color parser не потребує тексту
+                continue
             
             local_image_path = download_schedule_image_sync(image_url)
             if local_image_path and local_image_path != image_url:
@@ -747,7 +747,7 @@ def update_schedules():
                         db=db,
                         schedule_id=existing.id,
                         image_url=image_url,
-                        recognized_text=recognized_text,
+                        recognized_text="",
                         parsed_data=parsed_schedule,
                         content_hash=content_hash
                     )
@@ -756,7 +756,7 @@ def update_schedules():
                         db=db,
                         date=schedule_date,
                         image_url=image_url,
-                        recognized_text=recognized_text,
+                        recognized_text="",
                         parsed_data=parsed_schedule,
                         content_hash=content_hash
                     )
