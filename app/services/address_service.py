@@ -1,128 +1,92 @@
 """
 Сервіс для роботи з базою адрес
-Завантажує дані з GitHub та надає API для пошуку
-Використовує локальне кешування з перевіркою версії
+Завантажує дані з локального файлу та надає API для пошуку
+
+ВЕРСІЯ 2: Виправлено баг з літерами в номерах будинків (18А, 18Б, 18В, 18Г)
 """
 import json
-import requests
 import logging
 import os
 from typing import Dict, List, Optional
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# URL до файлів на GitHub
-ADDRESSES_DB_URL = "https://raw.githubusercontent.com/Elvis129/prosvitlo-addresses-db/main/addresses.json"
-VERSION_URL = "https://raw.githubusercontent.com/Elvis129/prosvitlo-addresses-db/main/version.json"
-
-# Локальні файли для кешування
+# Локальні файли бази даних
 CACHE_DIR = "cache"
-CACHE_FILE = os.path.join(CACHE_DIR, "addresses.json")
-VERSION_FILE = os.path.join(CACHE_DIR, "version.json")
+CACHE_FILE_V1 = os.path.join(CACHE_DIR, "addresses.json")  # Стара версія (backup)
+CACHE_FILE_V2 = os.path.join(CACHE_DIR, "addresses_v2.json")  # Нова версія (основна)
+VERSION_FILE = os.path.join(CACHE_DIR, "addresses_version.json")
 
 # Глобальна змінна для кешу адрес
 _addresses_cache: Optional[Dict] = None
-_current_version: Optional[str] = None
+_current_version: int = 2  # Поточна версія бази
+_use_v2: bool = True  # За замовчуванням використовуємо v2
 
 
-def _get_remote_version() -> Optional[Dict]:
+def _get_version_info() -> Dict:
     """
-    Отримує версію з GitHub
+    Отримує інформацію про версію бази даних
     
     Returns:
-        Словник з інформацією про версію або None
-    """
-    try:
-        response = requests.get(VERSION_URL, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.warning(f"Не вдалося отримати версію з GitHub: {e}")
-        return None
-
-
-def _get_local_version() -> Optional[Dict]:
-    """
-    Читає локальну версію з кешу
-    
-    Returns:
-        Словник з інформацією про версію або None
+        Словник з інформацією про версію
     """
     try:
         if os.path.exists(VERSION_FILE):
             with open(VERSION_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
     except Exception as e:
-        logger.warning(f"Не вдалося прочитати локальну версію: {e}")
-    return None
-
-
-def _save_local_version(version_data: Dict):
-    """
-    Зберігає версію локально
+        logger.warning(f"Не вдалося прочитати версію: {e}")
     
-    Args:
-        version_data: Дані версії для збереження
-    """
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(VERSION_FILE, 'w', encoding='utf-8') as f:
-            json.dump(version_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Не вдалося зберегти версію: {e}")
+    # За замовчуванням v2
+    return {
+        'version': 2,
+        'source': 'local',
+        'created_at': '2026-01-30',
+        'notes': 'Fixed house numbers with letters (18А, 18Б, etc.)'
+    }
 
 
 def _load_from_cache() -> Optional[Dict]:
     """
-    Завантажує адреси з локального кешу
+    Завантажує адреси з локального файлу
+    Спочатку пробує v2, якщо немає - fallback на v1
     
     Returns:
         Словник адрес або None
     """
+    global _current_version
+    
     try:
-        if os.path.exists(CACHE_FILE):
-            logger.info("Завантаження адрес з локального кешу...")
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        # Спочатку пробуємо v2 (з виправленими літерами)
+        if _use_v2 and os.path.exists(CACHE_FILE_V2):
+            logger.info(f"✓ Завантаження адрес з версії 2: {CACHE_FILE_V2}")
+            with open(CACHE_FILE_V2, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            _current_version = 2
+            logger.info("  (версія 2 - з виправленими літерами в адресах)")
+            return data
+        
+        # Fallback на v1
+        if os.path.exists(CACHE_FILE_V1):
+            logger.warning(f"⚠️  Завантаження адрес з версії 1 (fallback): {CACHE_FILE_V1}")
+            logger.warning("  Версія 1 має баг з літерами в номерах будинків!")
+            with open(CACHE_FILE_V1, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            _current_version = 1
+            return data
+            
     except Exception as e:
-        logger.error(f"Помилка при читанні кешу: {e}")
+        logger.error(f"Помилка при читанні файлу бази даних: {e}")
+    
     return None
-
-
-def _save_to_cache(addresses: Dict):
-    """
-    Зберігає адреси в локальний кеш
-    
-    Args:
-        addresses: Словник адрес для збереження
-    """
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(addresses, f, ensure_ascii=False, indent=2)
-        logger.info(f"✅ Адреси збережено в кеш: {CACHE_FILE}")
-    except Exception as e:
-        logger.error(f"Не вдалося зберегти кеш: {e}")
-
-
-def _download_from_github() -> Dict:
-    """
-    Завантажує базу адрес з GitHub
-    
-    Returns:
-        Словник з адресами
-    """
-    logger.info(f"Завантаження адрес з GitHub: {ADDRESSES_DB_URL}")
-    response = requests.get(ADDRESSES_DB_URL, timeout=60)
-    response.raise_for_status()
-    return response.json()
 
 
 def load_addresses_from_github() -> Dict:
     """
-    Завантажує базу адрес з GitHub або локального кешу
-    Перевіряє версію і оновлює тільки при необхідності
+    Завантажує базу адрес з локального файлу.
+    
+    ПРИМІТКА: Назва функції залишена для зворотної сумісності,
+    але насправді завантажує з локального файлу, а не з GitHub.
     
     Returns:
         Словник з адресами у форматі {city: {street: {house: data}}}
@@ -135,54 +99,14 @@ def load_addresses_from_github() -> Dict:
         return _addresses_cache
     
     try:
-        # Перевіряємо версію на GitHub
-        remote_version = _get_remote_version()
-        local_version = _get_local_version()
+        # Завантажуємо з локального файлу
+        _addresses_cache = _load_from_cache()
         
-        needs_update = False
-        
-        if remote_version and local_version:
-            # Порівнюємо версії
-            if remote_version.get('version') != local_version.get('version'):
-                logger.info(f"Знайдено нову версію: {remote_version.get('version')} (поточна: {local_version.get('version')})")
-                needs_update = True
-            else:
-                logger.info(f"Версія актуальна: {local_version.get('version')}")
-        elif remote_version and not local_version:
-            logger.info("Локальна версія відсутня, завантажуємо...")
-            needs_update = True
-        elif not remote_version and local_version:
-            logger.warning("Не вдалося перевірити версію на GitHub, використовуємо локальний кеш")
-        else:
-            logger.warning("Не вдалося отримати інформацію про версії, завантажуємо з GitHub...")
-            needs_update = True
-        
-        # Завантажуємо адреси
-        if needs_update:
-            # Завантажуємо з GitHub
-            _addresses_cache = _download_from_github()
-            
-            # Зберігаємо в кеш
-            _save_to_cache(_addresses_cache)
-            
-            # Зберігаємо версію
-            if remote_version:
-                _save_local_version(remote_version)
-                _current_version = remote_version.get('version')
-        else:
-            # Завантажуємо з локального кешу
-            _addresses_cache = _load_from_cache()
-            
-            if _addresses_cache is None:
-                # Якщо кеш пошкоджений - завантажуємо з GitHub
-                logger.warning("Локальний кеш пошкоджений, завантажуємо з GitHub...")
-                _addresses_cache = _download_from_github()
-                _save_to_cache(_addresses_cache)
-                if remote_version:
-                    _save_local_version(remote_version)
-            
-            if local_version:
-                _current_version = local_version.get('version')
+        if _addresses_cache is None:
+            # Якщо нема жодної версії - критична помилка
+            error_msg = f"Файли бази даних не знайдені! Перевірте наявність {CACHE_FILE_V2} або {CACHE_FILE_V1}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
         
         # Статистика
         total_cities = len(_addresses_cache)
@@ -197,7 +121,8 @@ def load_addresses_from_github() -> Dict:
         return _addresses_cache
         
     except Exception as e:
-        logger.error(f"Помилка при завантаженні адрес: {e}")
+        logger.error(f"Критична помилка при завантаженні адрес: {e}")
+        raise
         
         # Пробуємо завантажити з локального кешу як fallback
         cached = _load_from_cache()
@@ -444,6 +369,7 @@ def get_statistics() -> Dict:
     
     total_streets = 0
     total_houses = 0
+    houses_with_letters = 0
     
     for city in cities:
         streets = [s for s in addresses[city].keys() if s != "Вулиця"]
@@ -452,13 +378,124 @@ def get_statistics() -> Dict:
         for street in streets:
             houses = [h for h in addresses[city][street].keys() if h != "Список будинків"]
             total_houses += len(houses)
+            
+            # Рахуємо будинки з літерами (для діагностики)
+            for house in houses:
+                if any(c.isalpha() and ord(c) > 127 for c in house):
+                    houses_with_letters += 1
+    
+    # Визначаємо версію
+    version = "v2" if _use_v2 and os.path.exists(CACHE_FILE_V2) else "v1"
     
     return {
         "total_cities": len(cities),
         "total_streets": total_streets,
         "total_houses": total_houses,
-        "database_url": ADDRESSES_DB_URL
+        "houses_with_letters": houses_with_letters,
+        "letter_percentage": round(houses_with_letters / total_houses * 100, 2) if total_houses > 0 else 0,
+        "database_version": f"v{_current_version}",
+        "database_source": "local"
     }
+
+
+def switch_to_v1():
+    """
+    ROLLBACK: Перемикає на стару версію бази даних.
+    Використовуйте якщо v2 викликає проблеми.
+    """
+    global _use_v2, _addresses_cache
+    logger.warning("⚠️  ROLLBACK: Перемикання на версію 1 бази даних")
+    _use_v2 = False
+    _addresses_cache = None  # Скидаємо кеш
+    logger.info("✓ Наступне завантаження буде використовувати v1")
+
+
+def switch_to_v2():
+    """
+    Перемикає на нову версію бази даних (з виправленими літерами).
+    """
+    global _use_v2, _addresses_cache
+    
+    if not os.path.exists(CACHE_FILE_V2):
+        logger.error("❌ Файл версії 2 не знайдено!")
+        return False
+    
+    logger.info("✓ Перемикання на версію 2 бази даних")
+    _use_v2 = True
+    _addresses_cache = None  # Скидаємо кеш
+    logger.info("✓ Наступне завантаження буде використовувати v2")
+    return True
+
+
+def validate_user_data_migration() -> Dict:
+    """
+    Перевіряє чи не втратять користувачі свої збережені адреси при міграції на v2.
+    
+    Повертає звіт про сумісність:
+    - missing_in_v2: адреси що були в v1 але немає в v2
+    - new_in_v2: нові адреси в v2
+    - compatible: чи сумісні версії
+    """
+    result = {
+        "compatible": True,
+        "missing_in_v2": [],
+        "new_in_v2": 0,
+        "v1_total": 0,
+        "v2_total": 0,
+        "notes": []
+    }
+    
+    try:
+        # Завантажуємо v1
+        if not os.path.exists(CACHE_FILE_V1):
+            result["notes"].append("v1 не знайдено - нема з чим порівнювати")
+            return result
+        
+        with open(CACHE_FILE_V1, 'r', encoding='utf-8') as f:
+            v1_data = json.load(f)
+        
+        # Завантажуємо v2
+        if not os.path.exists(CACHE_FILE_V2):
+            result["notes"].append("v2 не знайдено")
+            result["compatible"] = False
+            return result
+        
+        with open(CACHE_FILE_V2, 'r', encoding='utf-8') as f:
+            v2_data = json.load(f)
+        
+        # Порівнюємо
+        for city, streets in v1_data.items():
+            for street, houses in streets.items():
+                for house in houses.keys():
+                    result["v1_total"] += 1
+                    
+                    # Перевіряємо чи є в v2
+                    if city not in v2_data or street not in v2_data.get(city, {}) or house not in v2_data[city][street]:
+                        result["missing_in_v2"].append(f"{city}, {street}, {house}")
+        
+        # Рахуємо нові в v2
+        for city, streets in v2_data.items():
+            for street, houses in streets.items():
+                result["v2_total"] += len(houses)
+        
+        result["new_in_v2"] = result["v2_total"] - result["v1_total"]
+        
+        # Висновок
+        if len(result["missing_in_v2"]) == 0:
+            result["compatible"] = True
+            result["notes"].append("✅ Всі адреси з v1 присутні в v2")
+        else:
+            result["compatible"] = False
+            result["notes"].append(f"⚠️  {len(result['missing_in_v2'])} адрес з v1 відсутні в v2")
+        
+        if result["new_in_v2"] > 0:
+            result["notes"].append(f"✓ Додано {result['new_in_v2']} нових адрес")
+        
+    except Exception as e:
+        result["compatible"] = False
+        result["notes"].append(f"Помилка при порівнянні: {e}")
+    
+    return result
 
 
 # Для тестування
