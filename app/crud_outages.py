@@ -96,10 +96,14 @@ def get_active_emergency_outages_for_address(
     db: Session,
     city: str,
     street: str,
-    house_number: str
+    house_number: str,
+    region: str = None
 ) -> List[models.EmergencyOutage]:
     """
     Отримує активні аварійні відключення для конкретної адреси
+    
+    Args:
+        region: (опціонально) Фільтр по області (hoe/voe)
     """
     # Нормалізуємо назву міста
     city_normalized = normalize_city_name(city)
@@ -108,7 +112,7 @@ def get_active_emergency_outages_for_address(
     now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     # Знаходимо всі відключення для цього міста та вулиці
-    outages = db.query(models.EmergencyOutage).filter(
+    query = db.query(models.EmergencyOutage).filter(
         and_(
             (models.EmergencyOutage.city == city) | (models.EmergencyOutage.city == "с. " + city_normalized) | (models.EmergencyOutage.city == "м. " + city_normalized) | (models.EmergencyOutage.city == city_normalized),
             models.EmergencyOutage.street == street,
@@ -116,7 +120,13 @@ def get_active_emergency_outages_for_address(
             models.EmergencyOutage.start_time <= now,
             models.EmergencyOutage.end_time >= now
         )
-    ).all()
+    )
+    
+    # Фільтруємо по регіону якщо вказано
+    if region:
+        query = query.filter(models.EmergencyOutage.region == region)
+    
+    outages = query.all()
     
     # Фільтруємо по номеру будинку
     result = []
@@ -133,7 +143,8 @@ def get_active_planned_outages_for_address(
     db: Session,
     city: str,
     street: str,
-    house_number: str
+    house_number: str,
+    region: str = None
 ) -> List[models.PlannedOutage]:
     """
     Отримує активні планові відключення для конкретної адреси
@@ -145,7 +156,7 @@ def get_active_planned_outages_for_address(
     now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
     # Знаходимо всі відключення для цього міста та вулиці
-    outages = db.query(models.PlannedOutage).filter(
+    query = db.query(models.PlannedOutage).filter(
         and_(
             (models.PlannedOutage.city == city) | (models.PlannedOutage.city == "с. " + city_normalized) | (models.PlannedOutage.city == "м. " + city_normalized) | (models.PlannedOutage.city == city_normalized),
             models.PlannedOutage.street == street,
@@ -153,7 +164,13 @@ def get_active_planned_outages_for_address(
             models.PlannedOutage.start_time <= now,
             models.PlannedOutage.end_time >= now
         )
-    ).all()
+    )
+    
+    # Фільтруємо по регіону якщо вказано
+    if region:
+        query = query.filter(models.PlannedOutage.region == region)
+    
+    outages = query.all()
     
     # Фільтруємо по номеру будинку
     result = []
@@ -170,7 +187,8 @@ def get_upcoming_emergency_outages_for_address(
     db: Session,
     city: str,
     street: str,
-    house_number: str
+    house_number: str,
+    region: str = None
 ) -> List[models.EmergencyOutage]:
     """
     Отримує майбутні аварійні відключення для конкретної адреси
@@ -181,14 +199,20 @@ def get_upcoming_emergency_outages_for_address(
     # Використовуємо київський час для порівняння
     now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
-    outages = db.query(models.EmergencyOutage).filter(
+    query = db.query(models.EmergencyOutage).filter(
         and_(
             (models.EmergencyOutage.city == city) | (models.EmergencyOutage.city == "с. " + city_normalized) | (models.EmergencyOutage.city == "м. " + city_normalized) | (models.EmergencyOutage.city == city_normalized),
             models.EmergencyOutage.street == street,
             models.EmergencyOutage.is_active == True,
             models.EmergencyOutage.start_time > now
         )
-    ).order_by(models.EmergencyOutage.start_time).all()
+    )
+    
+    # Фільтруємо по регіону якщо вказано
+    if region:
+        query = query.filter(models.EmergencyOutage.region == region)
+    
+    outages = query.order_by(models.EmergencyOutage.start_time).all()
     
     # Фільтруємо по номеру будинку
     result = []
@@ -204,7 +228,8 @@ def get_upcoming_planned_outages_for_address(
     db: Session,
     city: str,
     street: str,
-    house_number: str
+    house_number: str,
+    region: str = None
 ) -> List[models.PlannedOutage]:
     """
     Отримує майбутні планові відключення для конкретної адреси
@@ -215,14 +240,20 @@ def get_upcoming_planned_outages_for_address(
     # Використовуємо київський час для порівняння
     now = datetime.now(KYIV_TZ).replace(tzinfo=None)
     
-    outages = db.query(models.PlannedOutage).filter(
+    query = db.query(models.PlannedOutage).filter(
         and_(
             (models.PlannedOutage.city == city) | (models.PlannedOutage.city == "с. " + city_normalized) | (models.PlannedOutage.city == "м. " + city_normalized) | (models.PlannedOutage.city == city_normalized),
             models.PlannedOutage.street == street,
             models.PlannedOutage.is_active == True,
             models.PlannedOutage.start_time > now
         )
-    ).order_by(models.PlannedOutage.start_time).all()
+    )
+    
+    # Фільтруємо по регіону якщо вказано
+    if region:
+        query = query.filter(models.PlannedOutage.region == region)
+    
+    outages = query.order_by(models.PlannedOutage.start_time).all()
     
     # Фільтруємо по номеру будинку
     result = []

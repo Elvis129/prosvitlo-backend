@@ -23,20 +23,25 @@ logger = logging.getLogger(__name__)
 VOE_EMERGENCY_URL = "https://www.voe.com.ua/disconnection/emergency"
 VOE_PLANNED_URL = "https://www.voe.com.ua/disconnection/planned"
 
-# Мапа РЕМів VOE (потрібно уточнити після аналізу сайту)
-VOE_REM_MAP = {
-    "1": "Вінницький РЕМ",
-    "2": "Жмеринський РЕМ",
-    "3": "Могилів-Подільський РЕМ",
-    "4": "Тульчинський РЕМ",
-    "5": "Барський РЕМ",
-    "6": "Гайсинський РЕМ",
-    "7": "Козятинський РЕМ",
-    "8": "Калинівський РЕМ",
-    "9": "Немирівський РЕМ",
-    "10": "Хмільницький РЕМ",
-    # Додати інші при необхідності
-}
+# Мапа РЕМів VOE (з форми на сайті)
+VOE_REGIONS = [
+    # Вінницькі міські ЕМ
+    '23',  # Вінницькі МЕМ
+    # Вінницькі центральні ЕМ
+    '25', '26', '27',  # Замостянський, Тиврівський, Літинський
+    # Вінницькі східні ЕМ
+    '29', '30', '31', '32', '33',  # Іллінецький, Немирівський, Липовецький, Оратівський, Погребищенський
+    # Гайсинські ЕМ
+    '35', '36', '37', '38', '39',  # Гайсинський, Бершадський, Теплицький, Тростянецький, Чечельницький
+    # Жмеринські ЕМ
+    '41', '42', '43',  # Жмеринський, Барський, Шаргородський
+    # Могилів-Подільські ЕМ
+    '45', '46', '47', '48',  # Могилів-Подільський, Мурованокуриловецький, Чернівецький, Ямпільський
+    # Тульчинські ЕМ
+    '50', '51', '52', '53',  # Тульчинський, Крижопільський, Піщанський, Томашпільський
+    # Хмільницькі ЕМ
+    '55', '56', '57',  # Хмільницький, Калинівський, Козятинський
+]
 
 
 def fetch_voe_emergency_outages() -> Optional[List[Dict]]:
@@ -57,46 +62,84 @@ def fetch_voe_emergency_outages() -> Optional[List[Dict]]:
             'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
         }
         
-        # Спочатку отримуємо поточний рік/місяць
+        # Спочатку отримуємо сторінку щоб взяти form_build_id
         today = date.today()
         
-        # VOE може використовувати POST форму з фільтрами
-        data = {
-            'Year': str(today.year),
-            'Month': str(today.month),
-            # 'RemId': ''  # Всі РЕМи
-        }
+        logger.info("📄 [VOE] Завантажуємо сторінку для отримання form_build_id...")
+        session = requests.Session()
+        initial_response = session.get(VOE_EMERGENCY_URL, headers=headers, timeout=30)
+        initial_response.raise_for_status()
+        initial_response.encoding = 'utf-8'
         
-        response = requests.post(
-            VOE_EMERGENCY_URL,
-            data=data,
-            headers=headers,
-            timeout=30
-        )
-        response.raise_for_status()
-        response.encoding = 'utf-8'
+        # Парсимо форму для отримання form_build_id
+        initial_soup = BeautifulSoup(initial_response.text, 'html.parser')
+        form = initial_soup.find('form', {'id': 'disconnection-search-form'})
         
-        # Перевірка чи сторінка змінилася
+        if not form:
+            logger.warning("⚠️ [VOE] Форма disconnection-search-form не знайдена")
+            return []
+        
+        # Знаходимо form_build_id
+        form_build_id_input = form.find('input', {'name': 'form_build_id'})
+        form_build_id = form_build_id_input.get('value') if form_build_id_input else None
+        
+        if not form_build_id:
+            logger.warning("⚠️ [VOE] form_build_id не знайдено")
+            return []
+        
+        logger.info(f"✅ [VOE] form_build_id: {form_build_id}")
+        
+        # Ітеруємо по всіх регіонах VOE (без регіону повертає порожню сторінку)
+        all_outages = []
+        
+        for region_id in VOE_REGIONS:
+            try:
+                data = {
+                    'year': str(today.year),
+                    'month': f"{today.month:02d}",
+                    'region': region_id,
+                    'form_build_id': form_build_id,
+                    'form_id': 'disconnection_search_form',
+                    'op': 'Показати'
+                }
+                
+                logger.debug(f"📤 [VOE] Запит регіон {region_id}...")
+                
+                response = session.post(
+                    VOE_EMERGENCY_URL,
+                    data=data,
+                    headers=headers,
+                    timeout=30
+                )
+                response.raise_for_status()
+                response.encoding = 'utf-8'
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Перевіряємо чи є дані
+                empty_msg = soup.find('div', class_='empty')
+                if empty_msg and 'Скористайтеся формою' in empty_msg.get_text():
+                    continue
+                
+                # Шукаємо таблицю
+                table = soup.find('table')
+                if table:
+                    region_outages = _parse_voe_table(table, 'emergency', region_id)
+                    all_outages.extend(region_outages)
+                    logger.debug(f"✅ [VOE] Регіон {region_id}: {len(region_outages)} відключень")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ [VOE] Помилка обробки регіону {region_id}: {e}")
+                continue
+        
+        # Перевірка чи дані змінилися
         from app.scraper.page_cache import has_page_changed
-        if not has_page_changed("voe_emergency", response.text):
-            logger.info("ℹ️ [VOE] Аварійні: сторінка не змінилася")
+        combined_hash = str(len(all_outages)) + str([o.get('start_time') for o in all_outages[:5]])
+        if not has_page_changed("voe_emergency", combined_hash):
+            logger.info("ℹ️ [VOE] Аварійні: дані не змінилися")
             return None
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        outages = []
-        
-        # Шукаємо таблицю або список відключень
-        # Спочатку пробуємо знайти таблицю
-        table = soup.find('table', class_=['table', 'outages-table', 'disconnect-table'])
-        
-        if table:
-            outages = _parse_voe_table(table, 'emergency')
-        else:
-            # Якщо таблиці немає, шукаємо інші елементи
-            # Можливо це div-и або список
-            items = soup.find_all(['div', 'article'], class_=['outage-item', 'disconnect-item'])
-            if items:
-                outages = _parse_voe_items(items, 'emergency')
+        outages = all_outages
         
         logger.info(f"✅ [VOE] Аварійні: знайдено {len(outages)} відключень")
         return outages
@@ -130,38 +173,78 @@ def fetch_voe_planned_outages() -> Optional[List[Dict]]:
         
         today = date.today()
         
-        # POST форма з фільтрами
-        data = {
-            'Year': str(today.year),
-            'Month': str(today.month),
-        }
+        # Спочатку отримуємо сторінку щоб взяти form_build_id
+        logger.info("📄 [VOE] Завантажуємо сторінку для отримання form_build_id...")
+        session = requests.Session()
+        initial_response = session.get(VOE_PLANNED_URL, headers=headers, timeout=30)
+        initial_response.raise_for_status()
+        initial_response.encoding = 'utf-8'
         
-        response = requests.post(
-            VOE_PLANNED_URL,
-            data=data,
-            headers=headers,
-            timeout=30
-        )
-        response.raise_for_status()
-        response.encoding = 'utf-8'
+        # Парсимо форму
+        initial_soup = BeautifulSoup(initial_response.text, 'html.parser')
+        form = initial_soup.find('form', {'id': 'disconnection-search-form'})
+        
+        if not form:
+            logger.warning("⚠️ [VOE] Форма disconnection-search-form не знайдена")
+            return []
+        
+        form_build_id_input = form.find('input', {'name': 'form_build_id'})
+        form_build_id = form_build_id_input.get('value') if form_build_id_input else None
+        
+        if not form_build_id:
+            logger.warning("⚠️ [VOE] form_build_id не знайдено")
+            return []
+        
+        logger.info(f"✅ [VOE] form_build_id: {form_build_id}")
+        
+        # Ітеруємо по всіх регіонах
+        all_outages = []
+        
+        for region_id in VOE_REGIONS:
+            try:
+                data = {
+                    'year': str(today.year),
+                    'month': f"{today.month:02d}",
+                    'region': region_id,
+                    'form_build_id': form_build_id,
+                    'form_id': 'disconnection_search_form',
+                    'op': 'Показати'
+                }
+                
+                logger.debug(f"📤 [VOE] Запит регіон {region_id}...")
+                
+                response = session.post(
+                    VOE_PLANNED_URL,
+                    data=data,
+                    headers=headers,
+                    timeout=30
+                )
+                response.raise_for_status()
+                response.encoding = 'utf-8'
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                empty_msg = soup.find('div', class_='empty')
+                if empty_msg and 'Скористайтеся формою' in empty_msg.get_text():
+                    continue
+                
+                table = soup.find('table')
+                if table:
+                    region_outages = _parse_voe_table(table, 'planned', region_id)
+                    all_outages.extend(region_outages)
+                    logger.debug(f"✅ [VOE] Регіон {region_id}: {len(region_outages)} відключень")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ [VOE] Помилка обробки регіону {region_id}: {e}")
+                continue
         
         from app.scraper.page_cache import has_page_changed
-        if not has_page_changed("voe_planned", response.text):
-            logger.info("ℹ️ [VOE] Планові: сторінка не змінилася")
+        combined_hash = str(len(all_outages)) + str([o.get('start_time') for o in all_outages[:5]])
+        if not has_page_changed("voe_planned", combined_hash):
+            logger.info("ℹ️ [VOE] Планові: дані не змінилися")
             return None
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        outages = []
-        
-        # Парсимо аналогічно до emergency
-        table = soup.find('table', class_=['table', 'outages-table', 'disconnect-table'])
-        
-        if table:
-            outages = _parse_voe_table(table, 'planned')
-        else:
-            items = soup.find_all(['div', 'article'], class_=['outage-item', 'disconnect-item'])
-            if items:
-                outages = _parse_voe_items(items, 'planned')
+        outages = all_outages
         
         logger.info(f"✅ [VOE] Планові: знайдено {len(outages)} відключень")
         return outages
@@ -175,13 +258,24 @@ def fetch_voe_planned_outages() -> Optional[List[Dict]]:
         return []
 
 
-def _parse_voe_table(table, outage_type: str) -> List[Dict]:
+def _parse_voe_table(table, outage_type: str, region_id: str = '') -> List[Dict]:
     """
     Парсить HTML таблицю з відключеннями VOE
+    
+    Структура таблиці:
+    0: п/п
+    1: Тип відключення
+    2: Плановий час закінчення
+    3: Назва населеного пункту
+    4: Назва вулиць, перелік будинків
+    5: Початок відключення
+    6: Фактичний час закінчення
+    7: Час формування інформації
     
     Args:
         table: BeautifulSoup table element
         outage_type: 'emergency' або 'planned'
+        region_id: ID регіону VOE
     
     Returns:
         List[Dict]: Список відключень
@@ -194,56 +288,79 @@ def _parse_voe_table(table, outage_type: str) -> List[Dict]:
         for row in rows:
             cells = row.find_all(['td', 'th'])
             
-            if len(cells) < 5:
+            if len(cells) < 6:
                 continue
             
             try:
-                # Адаптуємо під реальну структуру VOE таблиці
-                # Можливі варіанти колонок:
-                # [РЕМ/Структурна одиниця, Місто/Населений пункт, Вулиця, Будинки, Час початку, Час кінця]
-                # або
-                # [Дата, Час, Адреса, Опис]
-                
-                # Витягуємо текст з кожної комірки
                 cell_texts = [cell.get_text(strip=True) for cell in cells]
                 
-                # Пробуємо знайти основні поля
-                rem_name = cell_texts[0] if len(cell_texts) > 0 else ""
-                city = cell_texts[1] if len(cell_texts) > 1 else ""
-                street = cell_texts[2] if len(cell_texts) > 2 else ""
-                house_numbers = cell_texts[3] if len(cell_texts) > 3 else ""
+                # VOE має різну кількість колонок:
+                # Аварійні: 8 колонок [п/п, Тип, Плановий кінець, Місто, Вулиці, Початок, Фактичний кінець, Час формування]
+                # Планові: 9 колонок [п/п, Тип, Плановий кінець, Місто, Вулиці, Статус, Початок, Фактичний кінець, Час формування]
                 
-                # Час може бути в різних форматах
-                time_info = cell_texts[4] if len(cell_texts) > 4 else ""
-                
-                # Парсимо час
-                start_time, end_time = _parse_voe_time(time_info, cell_texts)
-                
-                if not all([city, street, start_time, end_time]):
-                    logger.debug(f"⚠️ [VOE] Пропущено рядок - не всі поля: {cell_texts}")
+                if len(cell_texts) >= 9:  # Планові відключення (9 колонок)
+                    work_type = cell_texts[1]
+                    planned_end = cell_texts[2]
+                    city = cell_texts[3]
+                    streets_houses = cell_texts[4]
+                    status = cell_texts[5]  # Нова колонка "Статус"
+                    start = cell_texts[6]
+                    actual_end = cell_texts[7]
+                elif len(cell_texts) >= 8:  # Аварійні відключення (8 колонок)
+                    work_type = cell_texts[1]
+                    planned_end = cell_texts[2]
+                    city = cell_texts[3]
+                    streets_houses = cell_texts[4]
+                    status = None
+                    start = cell_texts[5]
+                    actual_end = cell_texts[6]
+                else:
+                    logger.debug(f"⚠️ [VOE] Недостатньо колонок: {len(cell_texts)}")
                     continue
                 
-                # Очищаємо назви
-                city = _clean_voe_city_name(city)
+                # Парсимо адресу: "ВІННИЦЯ: вулиця Хмельницьке шосе 116,122А"
+                street = ""
+                house_numbers = ""
+                if ":" in streets_houses:
+                    parts = streets_houses.split(":", 1)
+                    if len(parts) == 2:
+                        street = parts[1].strip()
+                        # Відділяємо номери будинків від вулиці
+                        street_parts = street.rsplit(" ", 1)
+                        if len(street_parts) == 2 and any(c.isdigit() for c in street_parts[1]):
+                            street = street_parts[0]
+                            house_numbers = street_parts[1]
+                        else:
+                            # Якщо вулиця містить все разом
+                            pass
+                else:
+                    street = streets_houses
+                
+                # Парсимо час (формат: "2026-01-28 22:00:00")
+                start_time = _parse_voe_datetime(start)
+                end_time = _parse_voe_datetime(actual_end if actual_end else planned_end)
+                
+                if not all([city, street, start_time, end_time]):
+                    logger.debug(f"⚠️ [VOE] Пропущено рядок - не всі поля")
+                    continue
                 
                 outage = {
                     'region': 'voe',
-                    'rem_id': _get_voe_rem_id(rem_name),
-                    'rem_name': rem_name,
+                    'rem_id': region_id,
+                    'rem_name': f'VOE-{region_id}',
                     'city': city,
                     'street': street,
                     'house_numbers': house_numbers,
-                    'work_type': 'Аварійне відключення' if outage_type == 'emergency' else 'Планове відключення',
+                    'work_type': work_type,
                     'created_date': datetime.now(),
                     'start_time': start_time,
                     'end_time': end_time,
-                    'is_active': True,
+                    'is_active': datetime.now() <= end_time if end_time else True,
                 }
                 outages.append(outage)
                 
             except Exception as e:
                 logger.warning(f"⚠️ [VOE] Помилка парсингу рядка: {e}")
-                logger.debug(f"Вміст рядка: {[c.get_text(strip=True) for c in cells]}")
                 continue
     
     except Exception as e:
@@ -278,18 +395,18 @@ def _parse_voe_items(items, outage_type: str) -> List[Dict]:
             city = city_elem.get_text(strip=True) if city_elem else ""
             street = street_elem.get_text(strip=True) if street_elem else ""
             house_numbers = houses_elem.get_text(strip=True) if houses_elem else ""
-            time_info = time_elem.get_text(strip=True) if time_elem else ""
+            time_start_elem = item.find(class_=['start-time', 'час-початку'])
+            time_end_elem = item.find(class_=['end-time', 'час-кінця'])
             
-            start_time, end_time = _parse_voe_time(time_info, [])
+            start_time = _parse_voe_datetime(time_start_elem.get_text(strip=True)) if time_start_elem else None
+            end_time = _parse_voe_datetime(time_end_elem.get_text(strip=True)) if time_end_elem else None
             
             if not all([city, street, start_time, end_time]):
                 continue
             
-            city = _clean_voe_city_name(city)
-            
             outage = {
                 'region': 'voe',
-                'rem_id': _get_voe_rem_id(rem_name),
+                'rem_id': rem_name,
                 'rem_name': rem_name,
                 'city': city,
                 'street': street,
@@ -298,7 +415,7 @@ def _parse_voe_items(items, outage_type: str) -> List[Dict]:
                 'created_date': datetime.now(),
                 'start_time': start_time,
                 'end_time': end_time,
-                'is_active': True,
+                'is_active': datetime.now() <= end_time,
             }
             outages.append(outage)
             
@@ -309,78 +426,33 @@ def _parse_voe_items(items, outage_type: str) -> List[Dict]:
     return outages
 
 
-def _parse_voe_time(time_str: str, cell_texts: List[str]) -> tuple:
+def _parse_voe_datetime(dt_str: str) -> Optional[datetime]:
     """
-    Парсить час з VOE формату
+    Парсить дату/час VOE у форматі '2026-01-28 22:00:00'
     
-    Можливі формати:
-    - "15.01.2026 10:00 - 15.01.2026 14:00"
-    - "10:00 - 14:00"
-    - "з 10:00 до 14:00"
-    - Окремі колонки для початку і кінця
+    Args:
+        dt_str: Рядок з датою/часом
     
     Returns:
-        (start_time, end_time): datetime objects або (None, None)
+        datetime або None
     """
-    import re
-    
-    try:
-        # Варіант 1: Повний формат з датою
-        pattern1 = r'(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s*-\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})'
-        match1 = re.search(pattern1, time_str)
-        
-        if match1:
-            start_date, start_time, end_date, end_time = match1.groups()
-            start_dt = datetime.strptime(f"{start_date} {start_time}", "%d.%m.%Y %H:%M")
-            end_dt = datetime.strptime(f"{end_date} {end_time}", "%d.%m.%Y %H:%M")
-            return start_dt, end_dt
-        
-        # Варіант 2: Тільки час
-        pattern2 = r'(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})'
-        match2 = re.search(pattern2, time_str)
-        
-        if match2:
-            start_time, end_time = match2.groups()
-            today = date.today()
-            start_dt = datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
-            end_dt = datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
-            return start_dt, end_dt
-        
-        # Варіант 3: З окремих колонок
-        if len(cell_texts) >= 6:
-            # Можливо start_time в cell_texts[4], end_time в cell_texts[5]
-            try:
-                start_str = cell_texts[4]
-                end_str = cell_texts[5]
-                
-                # Парсимо окремо
-                start_dt = _parse_single_datetime(start_str)
-                end_dt = _parse_single_datetime(end_str)
-                
-                if start_dt and end_dt:
-                    return start_dt, end_dt
-            except:
-                pass
-        
-        logger.debug(f"⚠️ [VOE] Не вдалося розпарсити час: '{time_str}'")
-        return None, None
-        
-    except Exception as e:
-        logger.debug(f"⚠️ [VOE] Помилка парсингу часу: {e}")
-        return None, None
-
-
-def _parse_single_datetime(dt_str: str) -> Optional[datetime]:
-    """Парсить одну дату/час в різних форматах"""
-    import re
+    if not dt_str or dt_str.strip() == '':
+        return None
     
     dt_str = dt_str.strip()
     
-    # Спробувати різні формати
+    # Формат VOE: "2026-01-28 22:00:00"
+    try:
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    except:
+        pass
+    
+    # Інші можливі формати
     formats = [
-        "%d.%m.%Y %H:%M",
-        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
         "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
         "%d/%m/%Y %H:%M",
     ]
     
@@ -390,15 +462,7 @@ def _parse_single_datetime(dt_str: str) -> Optional[datetime]:
         except:
             continue
     
-    # Якщо тільки час - додаємо сьогоднішню дату
-    time_pattern = r'^\d{2}:\d{2}(:\d{2})?$'
-    if re.match(time_pattern, dt_str):
-        today = date.today()
-        try:
-            return datetime.strptime(f"{today} {dt_str}", "%Y-%m-%d %H:%M")
-        except:
-            pass
-    
+    logger.debug(f"⚠️ [VOE] Не вдалося розпарсити дату: '{dt_str}'")
     return None
 
 

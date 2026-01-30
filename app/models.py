@@ -112,6 +112,7 @@ class EmergencyOutage(Base):
     __tablename__ = "emergency_outages"
     
     id = Column(Integer, primary_key=True, index=True)
+    region = Column(String, default='hoe', nullable=False, index=True)  # Область (hoe/voe)
     rem_id = Column(Integer, nullable=False, index=True)  # ID району електромереж
     rem_name = Column(String, nullable=False)  # Назва РЕМ
     city = Column(String, nullable=False, index=True)  # Місто/громада
@@ -128,6 +129,7 @@ class EmergencyOutage(Base):
     __table_args__ = (
         Index('idx_emergency_active', 'is_active', 'start_time', 'end_time'),
         Index('idx_emergency_location', 'city', 'street'),
+        Index('idx_emergency_region', 'region', 'is_active'),
     )
     
     def __repr__(self):
@@ -141,6 +143,7 @@ class PlannedOutage(Base):
     __tablename__ = "planned_outages"
     
     id = Column(Integer, primary_key=True, index=True)
+    region = Column(String, default='hoe', nullable=False, index=True)  # Область (hoe/voe)
     rem_id = Column(Integer, nullable=False, index=True)  # ID району електромереж
     rem_name = Column(String, nullable=False)  # Назва РЕМ
     city = Column(String, nullable=False, index=True)  # Місто/громада
@@ -157,6 +160,7 @@ class PlannedOutage(Base):
     __table_args__ = (
         Index('idx_planned_active', 'is_active', 'start_time', 'end_time'),
         Index('idx_planned_location', 'city', 'street'),
+        Index('idx_planned_region', 'region', 'is_active'),
     )
     
     def __repr__(self):

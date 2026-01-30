@@ -19,10 +19,17 @@ async def get_outages_for_address(
     city: str = Query(..., description="Назва міста"),
     street: str = Query(..., description="Назва вулиці"),
     house: str = Query(..., description="Номер будинку"),
+    region: str = Query(None, description="Область (hoe/voe). Якщо не вказано - шукає в усіх"),
     db: Session = Depends(get_db)
 ):
     """
     Отримує інформацію про аварійні та планові відключення для конкретної адреси
+    
+    Параметри:
+    - city: Назва міста
+    - street: Назва вулиці  
+    - house: Номер будинку
+    - region: (опціонально) hoe/voe - фільтр по області
     
     Повертає:
     - Активні аварійні відключення (зараз)
@@ -43,7 +50,8 @@ async def get_outages_for_address(
             db=db,
             city=city,
             street=street,
-            house_number=house_number
+            house_number=house_number,
+            region=region
         )
         
         # Отримуємо майбутні аварійні відключення
@@ -51,7 +59,8 @@ async def get_outages_for_address(
             db=db,
             city=city,
             street=street,
-            house_number=house_number
+            house_number=house_number,
+            region=region
         )
         
         # Отримуємо активні планові відключення
@@ -59,7 +68,8 @@ async def get_outages_for_address(
             db=db,
             city=city,
             street=street,
-            house_number=house_number
+            house_number=house_number,
+            region=region
         )
         
         # Отримуємо майбутні планові відключення
@@ -67,7 +77,8 @@ async def get_outages_for_address(
             db=db,
             city=city,
             street=street,
-            house_number=house_number
+            house_number=house_number,
+            region=region
         )
         
         # Формуємо відповідь

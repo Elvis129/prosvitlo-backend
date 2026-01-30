@@ -333,54 +333,83 @@ def _parse_voe_date_from_text(url: str, text: str) -> Optional[date]:
     return None
 
 
-def parse_voe_queue_schedule(schedule_data: dict) -> Dict:
+def parse_voe_queue_schedule(local_path: str) -> Dict:
     """
-    Парсить графік VOE з зображення
+    Парсить графік VOE з файлу
     
-    УВАГА: Структура графіка VOE відрізняється від HOE!
-    Потрібен окремий parser який розуміє формат VOE
+    VOE графіки можуть бути:
+    - PDF з текстом черг (парсимо текст)
+    - Зображення з кольоровим графіком (використовуємо color parser)
     
     Args:
-        schedule_data: Дані графіка з fetch_voe_schedule_images()
+        local_path: Локальний шлях до файлу графіка
     
     Returns:
-        Dict: Розпарсений графік у форматі
+        Dict: Мапа черг на РЕМ
         {
-            "6.1": {"outages": [(12, 16)], "possible": [(8, 10)]},
-            "6.2": {"outages": [(14, 18)], "possible": []},
+            "РЕМ Вінниця-1": 1,
+            "РЕМ Вінниця-2": 2,
             ...
         }
     """
     try:
-        logger.info(f"🎨 [VOE] Парсимо графік для {schedule_data.get('date')}")
+        logger.info(f"🎨 [VOE] Парсимо графік: {local_path}")
         
-        image_url = schedule_data.get('image_url')
-        source = schedule_data.get('source', 'image')
-        
-        # Якщо це PDF - спочатку конвертуємо
-        if source == 'pdf' or schedule_data.get('needs_conversion'):
-            logger.info("📄 [VOE] Графік у форматі PDF - потребує конвертації")
-            # TODO: Імплементувати PDF → Image конвертацію
-            # from app.scraper.voe_pdf_converter import convert_pdf_to_image
-            # image_data = convert_pdf_to_image(image_url)
-            logger.warning("⚠️ [VOE] PDF конвертація ще не реалізована")
-            return {}
-        
-        # TODO: Створити VOE-specific color parser
-        # Поки що використовуємо базовий color parser
-        try:
-            from app.scraper.schedule_color_parser import parse_schedule_from_image
-            parsed_data = parse_schedule_from_image(image_url)
+        # Якщо це PDF - парсимо текст
+        if local_path.lower().endswith('.pdf'):
+            logger.info("📄 [VOE] Графік у форматі PDF")
             
-            if parsed_data:
-                logger.info(f"✅ [VOE] Розпарсовано {len(parsed_data)} черг")
+            from app.scraper.providers.voe.voe_pdf_parser import parse_voe_pdf_schedule
+            
+            queues = parse_voe_pdf_schedule(local_path)
+            
+            if queues:
+                logger.info(f"✅ [VOE] Розпарсовано {len(queues)} черг з PDF")
+                
+                # Конвертуємо черги в формат РЕМ → черга
+                # VOE формат: "1.1", "1.2", "2.1", "2.2", etc.
+                # Перша цифра - РЕМ, друга - черга
+                rem_map = {}
+                for queue_str, streets in queues.items():
+                    try:
+                        parts = queue_str.split('.')
+                        if len(parts) == 2:
+                            rem_num = int(parts[0])
+                            queue_num = int(parts[1])
+                            
+                            # Створюємо РЕМ назву
+                            rem_name = f"VOE-{rem_num}"
+                            rem_map[rem_name] = queue_num
+                            
+                    except ValueError:
+                        continue
+                
+                return rem_map
             else:
-                logger.warning("⚠️ [VOE] Графік порожній або не розпізнано")
+                logger.warning("⚠️ [VOE] PDF порожній або не розпізнано")
+                return {}
+        
+        # Якщо це зображення - використовуємо color parser
+        elif any(local_path.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+            logger.info("🖼️ [VOE] Графік у форматі зображення")
             
-            return parsed_data
-            
-        except Exception as e:
-            logger.error(f"❌ [VOE] Помилка color parser: {e}")
+            try:
+                from app.scraper.schedule_color_parser import parse_schedule_from_image
+                parsed_data = parse_schedule_from_image(local_path)
+                
+                if parsed_data:
+                    logger.info(f"✅ [VOE] Розпарсовано {len(parsed_data)} черг")
+                else:
+                    logger.warning("⚠️ [VOE] Графік порожній або не розпізнано")
+                
+                return parsed_data
+                
+            except Exception as e:
+                logger.error(f"❌ [VOE] Помилка color parser: {e}")
+                return {}
+        
+        else:
+            logger.warning(f"⚠️ [VOE] Невідомий формат файлу: {local_path}")
             return {}
         
     except Exception as e:

@@ -15,7 +15,14 @@ from app.scraper.providers.hoe import (
     fetch_all_emergency_outages,
     fetch_all_planned_outages
 )
+from app.scraper.providers.voe import (
+    fetch_voe_schedule_images,
+    parse_voe_queue_schedule,
+    fetch_voe_emergency_outages,
+    fetch_voe_planned_outages
+)
 from app.utils.image_downloader_sync import download_schedule_image_sync
+from app.config import VOE_ENABLED
 from app import crud_schedules, crud_outages
 from app.models import EmergencyOutage, PlannedOutage
 from app.database import SessionLocal
@@ -985,6 +992,264 @@ def update_planned_outages():
         db.close()
 
 
+# ============================================================================
+# 🟢 VOE SCHEDULERS (Вінницька область)
+# ============================================================================
+
+def update_voe_emergency_outages():
+    """
+    Оновлює аварійні відключення VOE кожні 15 хвилин
+    """
+    if not VOE_ENABLED:
+        return
+    
+    db: Session = SessionLocal()
+    try:
+        logger.info("[VOE] Початок оновлення аварійних відключень...")
+        
+        outages = fetch_voe_emergency_outages()
+        
+        if outages is None:
+            logger.info("[VOE] ✓ Аварійні: сторінки без змін")
+            return
+        
+        if not outages:
+            db.query(EmergencyOutage).filter(
+                EmergencyOutage.region == 'voe',
+                EmergencyOutage.is_active == True
+            ).update({'is_active': False})
+            db.commit()
+            return
+        
+        new_hashes = set()
+        outages_by_hash = {}
+        for outage in outages:
+            outage_hash = generate_outage_hash(outage)
+            new_hashes.add(outage_hash)
+            outages_by_hash[outage_hash] = outage
+        
+        existing_outages = db.query(EmergencyOutage).filter(
+            EmergencyOutage.region == 'voe',
+            EmergencyOutage.is_active == True
+        ).all()
+        
+        existing_hashes = set()
+        existing_by_hash = {}
+        for existing in existing_outages:
+            existing_dict = {
+                'rem_id': existing.rem_id,
+                'city': existing.city,
+                'street': existing.street,
+                'house_numbers': existing.house_numbers,
+                'start_time': str(existing.start_time),
+                'end_time': str(existing.end_time),
+                'work_type': existing.work_type
+            }
+            existing_hash = generate_outage_hash(existing_dict)
+            existing_hashes.add(existing_hash)
+            existing_by_hash[existing_hash] = existing
+        
+        to_add = new_hashes - existing_hashes
+        to_remove = existing_hashes - new_hashes
+        
+        if not to_add and not to_remove:
+            logger.info("[VOE] Аварійні: без змін")
+            return
+        
+        logger.info(f"[VOE] Аварійні: +{len(to_add)}, -{len(to_remove)}")
+        
+        for outage_hash in to_remove:
+            existing_by_hash[outage_hash].is_active = False
+        
+        new_outages_list = []
+        for outage_hash in to_add:
+            outage = outages_by_hash[outage_hash]
+            new_outage = crud_outages.create_emergency_outage(
+                db=db,
+                rem_id=outage['rem_id'],
+                rem_name=outage['rem_name'],
+                city=outage['city'],
+                street=outage['street'],
+                house_numbers=outage['house_numbers'],
+                work_type=outage['work_type'],
+                created_date=outage['created_date'],
+                start_time=outage['start_time'],
+                end_time=outage['end_time']
+            )
+            new_outages_list.append(new_outage)
+        
+        db.commit()
+        
+        if new_outages_list:
+            logger.info(f"[VOE] 🔔 Планування пушів для {len(new_outages_list)} нових аварійних відключень")
+            for new_outage in new_outages_list:
+                notify_new_outages_immediately(db, [new_outage], "emergency")
+        
+    except Exception as e:
+        logger.error(f"[VOE] Помилка при оновленні аварійних: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def update_voe_planned_outages():
+    """
+    Оновлює планові відключення VOE 1 раз на день о 9:00
+    """
+    if not VOE_ENABLED:
+        return
+    
+    db: Session = SessionLocal()
+    try:
+        logger.info("[VOE] Початок оновлення планових відключень...")
+        
+        outages = fetch_voe_planned_outages()
+        
+        if outages is None:
+            logger.info("[VOE] ✓ Планові: сторінки без змін")
+            return
+        
+        if not outages:
+            db.query(PlannedOutage).filter(
+                PlannedOutage.region == 'voe',
+                PlannedOutage.is_active == True
+            ).update({'is_active': False})
+            db.commit()
+            return
+        
+        new_hashes = set()
+        outages_by_hash = {}
+        for outage in outages:
+            outage_hash = generate_outage_hash(outage)
+            new_hashes.add(outage_hash)
+            outages_by_hash[outage_hash] = outage
+        
+        existing_outages = db.query(PlannedOutage).filter(
+            PlannedOutage.region == 'voe',
+            PlannedOutage.is_active == True
+        ).all()
+        
+        existing_hashes = set()
+        existing_by_hash = {}
+        for existing in existing_outages:
+            existing_dict = {
+                'rem_id': existing.rem_id,
+                'city': existing.city,
+                'street': existing.street,
+                'house_numbers': existing.house_numbers,
+                'start_time': str(existing.start_time),
+                'end_time': str(existing.end_time),
+                'work_type': existing.work_type
+            }
+            existing_hash = generate_outage_hash(existing_dict)
+            existing_hashes.add(existing_hash)
+            existing_by_hash[existing_hash] = existing
+        
+        to_add = new_hashes - existing_hashes
+        to_remove = existing_hashes - new_hashes
+        
+        if not to_add and not to_remove:
+            logger.info("[VOE] Планові: без змін")
+            return
+        
+        logger.info(f"[VOE] Планові: +{len(to_add)}, -{len(to_remove)}")
+        
+        for outage_hash in to_remove:
+            existing_by_hash[outage_hash].is_active = False
+        
+        new_outages_list = []
+        for outage_hash in to_add:
+            outage = outages_by_hash[outage_hash]
+            new_outage = crud_outages.create_planned_outage(
+                db=db,
+                rem_id=outage['rem_id'],
+                rem_name=outage['rem_name'],
+                city=outage['city'],
+                street=outage['street'],
+                house_numbers=outage['house_numbers'],
+                work_type=outage['work_type'],
+                created_date=outage['created_date'],
+                start_time=outage['start_time'],
+                end_time=outage['end_time']
+            )
+            new_outages_list.append(new_outage)
+        
+        db.commit()
+        
+        if new_outages_list:
+            logger.info(f"[VOE] 🔔 Планування пушів для {len(new_outages_list)} нових планових відключень")
+            for new_outage in new_outages_list:
+                notify_new_outages_immediately(db, [new_outage], "planned")
+        
+    except Exception as e:
+        logger.error(f"[VOE] Помилка при оновленні планових: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def update_voe_schedules():
+    """
+    Оновлює графіки VOE щодня о 8:00
+    """
+    if not VOE_ENABLED:
+        return
+    
+    db: Session = SessionLocal()
+    try:
+        logger.info("[VOE] Початок оновлення графіків...")
+        
+        schedule_images = fetch_voe_schedule_images()
+        
+        if schedule_images is None:
+            logger.info("[VOE] ✓ Графіки: сторінки без змін")
+            return
+        
+        if not schedule_images:
+            logger.info("[VOE] ⚠️ Графіки не знайдено")
+            return
+        
+        logger.info(f"[VOE] Знайдено {len(schedule_images)} графіків")
+        
+        for schedule_info in schedule_images:
+            image_url = schedule_info['image_url']
+            source_type = schedule_info['source_type']
+            schedule_date = schedule_info.get('schedule_date', date.today())
+            
+            try:
+                local_path = download_schedule_image_sync(image_url, source_type)
+                logger.info(f"[VOE] ✓ Завантажено: {local_path}")
+                
+                # Парсимо графік (підтримка PDF і зображень)
+                queue_data = parse_voe_queue_schedule(local_path)
+                
+                if queue_data:
+                    for rem_name, queue_number in queue_data.items():
+                        crud_schedules.update_or_create_schedule(
+                            db=db,
+                            rem_name=rem_name,
+                            queue_number=queue_number,
+                            schedule_date=schedule_date,
+                            image_source=source_type,
+                            region='voe'
+                        )
+                    logger.info(f"[VOE] ✓ Оброблено {len(queue_data)} РЕМів")
+                else:
+                    logger.warning(f"[VOE] ⚠️ Не вдалося розпізнати черги на графіку")
+                    
+            except Exception as e:
+                logger.error(f"[VOE] Помилка при обробці графіка: {e}")
+                continue
+        
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"[VOE] Помилка при оновленні графіків: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def cleanup_old_outages():
     """Видаляє старі відключення"""
     db: Session = SessionLocal()
@@ -1918,6 +2183,30 @@ def start_scheduler():
     # ⭐ Планові - перший запуск через 25с, потім ТІЛЬКИ 1 раз на день о 9:00
     scheduler.add_job(update_planned_outages, 'cron', hour=9, minute=0, id='planned')
     scheduler.add_job(update_planned_outages, 'date', run_date=start_time + timedelta(seconds=15), id='planned_initial')
+    
+    # ============================================================================
+    # 🟢 VOE JOBS (Вінницька область)
+    # ============================================================================
+    if VOE_ENABLED:
+        logger.info("🟢 [VOE] Додаємо планувальник для Вінницької області")
+        
+        # VOE Аварійні - з тим самим інтервалом що і HOE
+        scheduler.add_job(update_voe_emergency_outages, 'interval', minutes=check_interval, id='voe_emergency', 
+                         next_run_time=start_time + timedelta(seconds=7))
+        
+        # VOE Планові - 1 раз на день о 9:15
+        scheduler.add_job(update_voe_planned_outages, 'cron', hour=9, minute=15, id='voe_planned')
+        scheduler.add_job(update_voe_planned_outages, 'date', run_date=start_time + timedelta(seconds=20), id='voe_planned_initial')
+        
+        # VOE Графіки - щодня о 8:00
+        scheduler.add_job(update_voe_schedules, 'cron', hour=8, minute=0, id='voe_schedules')
+        scheduler.add_job(update_voe_schedules, 'date', run_date=start_time + timedelta(seconds=12), id='voe_schedules_initial')
+        
+        logger.info("✅ [VOE] Jobs додано успішно")
+    
+    # ============================================================================
+    # 🔄 ЗАГАЛЬНІ JOBS
+    # ============================================================================
     
     # ⭐ ДИНАМІЧНІ JOBS створюються автоматично:
     #    - При парсингу графіків (schedule_queue_notifications)
