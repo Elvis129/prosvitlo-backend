@@ -23,8 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копіюємо весь проєкт
 COPY . .
 
-# Створюємо директорії для кешу та статики
-RUN mkdir -p cache app/static/schedules
+# Створюємо директорії для статики (cache вже скопійована)
+RUN mkdir -p app/static/schedules
 
 # Відкриваємо порт 8080 (стандарт для Fly.io)
 EXPOSE 8080

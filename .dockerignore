@@ -42,9 +42,8 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Cache (буде створена на Fly.io)
-cache/
-*.cache
+# Cache тимчасових файлів (але НЕ addresses_v2.json!)
+# cache/ - закоментовано, бо там база даних
 
 # Static files
 app/static/schedules/*.jpg
