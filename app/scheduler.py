@@ -1720,6 +1720,72 @@ def cleanup_old_notifications_job():
         db.close()
 
 
+def cleanup_inactive_devices():
+    """
+    Видаляє неактивні токени та адреси (щодня о 4:30)
+    
+    Логіка:
+    1. Видаляє device_tokens які не оновлювались більше 90 днів
+    2. Видаляє user_addresses для device_id які не мають активного токену
+    """
+    from app.models import DeviceToken, UserAddress
+    from datetime import datetime, timedelta
+    
+    db: Session = SessionLocal()
+    try:
+        # Поріг неактивності - 90 днів
+        inactive_threshold = datetime.now() - timedelta(days=90)
+        
+        logger.info("🧹 Початок очищення неактивних пристроїв...")
+        
+        # 1. Знаходимо і видаляємо старі токени (не оновлювались 90+ днів)
+        old_tokens = db.query(DeviceToken).filter(
+            DeviceToken.updated_at < inactive_threshold
+        ).all()
+        
+        old_token_device_ids = [token.device_id for token in old_tokens]
+        
+        if old_tokens:
+            logger.info(f"📱 Знайдено {len(old_tokens)} неактивних токенів (не оновлювались >90 днів)")
+            for token in old_tokens:
+                logger.info(f"  🗑️ Видаляємо токен: {token.device_id} (платформа: {token.platform}, останнє оновлення: {token.updated_at})")
+                db.delete(token)
+        
+        # 2. Знаходимо device_id в user_addresses які не мають токену
+        orphaned_addresses = db.query(UserAddress).outerjoin(
+            DeviceToken, UserAddress.device_id == DeviceToken.device_id
+        ).filter(
+            DeviceToken.device_id == None  # Немає відповідного токену
+        ).all()
+        
+        if orphaned_addresses:
+            # Групуємо по device_id для статистики
+            orphaned_device_ids = list(set([addr.device_id for addr in orphaned_addresses]))
+            logger.info(f"🏠 Знайдено {len(orphaned_addresses)} адрес без активного токену ({len(orphaned_device_ids)} пристроїв)")
+            
+            for addr in orphaned_addresses:
+                logger.info(f"  🗑️ Видаляємо адресу: {addr.city}, {addr.street}, {addr.house_number} (device: {addr.device_id})")
+                db.delete(addr)
+        
+        # Виконуємо commit один раз для всіх змін
+        db.commit()
+        
+        total_deleted_tokens = len(old_tokens)
+        total_deleted_addresses = len(orphaned_addresses)
+        
+        if total_deleted_tokens > 0 or total_deleted_addresses > 0:
+            logger.info(f"✅ Очищення завершено: видалено {total_deleted_tokens} токенів та {total_deleted_addresses} адрес")
+        else:
+            logger.info("✅ Очищення завершено: неактивних пристроїв не знайдено")
+        
+    except Exception as e:
+        logger.error(f"❌ Помилка при очищенні неактивних пристроїв: {e}")
+        logger.exception("Детальна інформація про помилку:")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def reset_no_schedule_state(db: Session):
     """
     Скидає стан повідомлень "немає графіка" коли додається новий графік
@@ -1928,6 +1994,9 @@ def start_scheduler():
     # Очищення старих повідомлень - щодня о 3:00
     scheduler.add_job(cleanup_old_notifications_job, 'cron', hour=3, minute=0, id='cleanup_notifications')
     
+    # Очищення неактивних пристроїв та адрес - щодня о 4:30
+    scheduler.add_job(cleanup_inactive_devices, 'cron', hour=4, minute=30, id='cleanup_devices')
+    
     print(f"🔵 [SCHEDULER] Викликаємо scheduler.start()", flush=True)
     scheduler.start()
     print(f"✅ [SCHEDULER] scheduler.start() завершено успішно", flush=True)
@@ -1949,6 +2018,7 @@ def start_scheduler():
     logger.info("  🌙 Перевірка графіка на завтра: щодня о 23:00")
     logger.info("  🧹 Очищення відключень: щодня о 2:00")
     logger.info("  🧹 Очищення повідомлень: щодня о 3:00")
+    logger.info("  🧹 Очищення неактивних пристроїв: щодня о 4:30")
     logger.info("=" * 60)
 
 
