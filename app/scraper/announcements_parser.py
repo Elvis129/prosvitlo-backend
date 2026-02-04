@@ -136,6 +136,7 @@ def _analyze_changes(template_content: List[str], current_content: List[str]) ->
     """
     Аналізує відмінності між шаблоном та поточним контентом
     Створює оголошення з НОВИХ параграфів + додає зв'язуючі параграфи для контексту
+    ⭐ ВИПРАВЛЕНО: знаходить ВСІ нові блоки, а не тільки останній
     """
     announcements = []
     
@@ -151,80 +152,79 @@ def _analyze_changes(template_content: List[str], current_content: List[str]) ->
     
     logger.info(f"Знайдено {len(new_indices_set)} НОВИХ параграфів")
     
-    # Створюємо групи оголошень
-    # Логіка: якщо параграфи містять ключові слова про відключення - групуємо їх разом
+    # ⭐ ВИПРАВЛЕННЯ: Групуємо всі нові параграфи по блокам оголошень
+    # Створюємо окремі оголошення для кожного блоку (щоб не пропускати)
     
-    i = 0
-    while i < len(current_content):
-        # Пропускаємо старі параграфи, якщо вони не зв'язуючі
-        if i not in new_indices_set:
-            # Перевіряємо чи це зв'язуючий параграф (Відповідно:, тощо)
-            para = current_content[i]
-            if not ('відповідно' in para.lower() and len(para) < 50):
-                i += 1
-                continue
-        
-        # Знайшли новий або зв'язуючий параграф - починаємо групу
-        current_announcement = []
-        start_idx = i
-        
-        # Шукаємо початок оголошення (заголовок з ключовими словами)
-        para = current_content[i]
+    # Спочатку знаходимо всі заголовки оголошень (нові або важливі)
+    announcement_starts = []
+    for i, para in enumerate(current_content):
         is_announcement_start = (
             'збільшення обсягу' in para.lower() or
             'зменшення обсягу' in para.lower() or
             'розпорядженням нек' in para.lower() or
             'розпорядження нек' in para.lower() or
             para.startswith('UPD') or
-            para.startswith('Оновлення')
+            para.startswith('Оновлення') or
+            'графік оновлено' in para.lower() or
+            'новий графік' in para.lower()
         )
         
-        if is_announcement_start:
-            # Це початок оголошення - збираємо всі наступні пов'язані параграфи
-            current_announcement.append(para)
-            i += 1
+        # Додаємо тільки якщо це новий параграф АБО важливе оголошення
+        if is_announcement_start and (i in new_indices_set or 'розпорядженням нек' in para.lower()):
+            announcement_starts.append(i)
+            logger.info(f"📍 Знайдено початок оголошення на позиції {i}: {para[:80]}...")
+    
+    if not announcement_starts:
+        logger.warning("Не знайдено заголовків оголошень серед нових параграфів")
+        # Якщо немає чітких заголовків, але є нові параграфи - створюємо одне загальне оголошення
+        new_paragraphs = [current_content[i] for i in sorted(new_indices_set)]
+        if new_paragraphs:
+            _save_announcement(new_paragraphs, announcements, 'schedule_page')
+        return announcements
+    
+    # ⭐ ВИПРАВЛЕННЯ: Обробляємо КОЖЕН заголовок окремо
+    for start_idx in announcement_starts:
+        current_announcement = []
+        para = current_content[start_idx]
+        current_announcement.append(para)
+        
+        logger.info(f"🔍 Обробка оголошення що починається з: {para[:60]}...")
+        
+        # Знаходимо наступний заголовок (якщо є)
+        next_start_idx = None
+        for next_idx in announcement_starts:
+            if next_idx > start_idx:
+                next_start_idx = next_idx
+                break
+        
+        # Збираємо всі параграфи до наступного заголовка або до кінця
+        i = start_idx + 1
+        end_limit = next_start_idx if next_start_idx else len(current_content)
+        
+        while i < end_limit:
+            next_para = current_content[i]
             
-            # Додаємо всі наступні параграфи що стосуються цього оголошення
-            while i < len(current_content):
-                next_para = current_content[i]
-                
-                # Зупиняємось якщо це новий заголовок оголошення
-                is_next_announcement = (
-                    'збільшення обсягу' in next_para.lower() or
-                    'зменшення обсягу' in next_para.lower() or
-                    ('розпорядженням нек' in next_para.lower() and i in new_indices_set) or
-                    next_para.startswith('UPD') or
-                    next_para.startswith('Оновлення')
-                )
-                
-                if is_next_announcement:
-                    break
-                
-                # Додаємо параграф якщо він:
-                # 1. Новий, АБО
-                # 2. Зв'язуючий ("Відповідно:", короткий), АБО  
-                # 3. Містить інформацію про черги/підчерги
-                should_include = (
-                    i in new_indices_set or
-                    ('відповідно' in next_para.lower() and len(next_para) < 50) or
-                    'підчерг' in next_para.lower() or
-                    next_para.strip().startswith('•') or
-                    next_para.strip().startswith('-')
-                )
-                
-                if should_include:
-                    current_announcement.append(next_para)
-                    i += 1
-                else:
-                    # Досягли кінця оголошення
-                    break
+            # Додаємо параграф якщо він:
+            # 1. Новий (в new_indices_set), АБО
+            # 2. Зв'язуючий (короткий з "відповідно"), АБО  
+            # 3. Містить інформацію про черги/підчерги
+            should_include = (
+                i in new_indices_set or
+                ('відповідно' in next_para.lower() and len(next_para) < 50) or
+                'підчерг' in next_para.lower() or
+                next_para.strip().startswith('•') or
+                next_para.strip().startswith('-')
+            )
             
-            # Зберігаємо оголошення
-            if current_announcement:
-                _save_announcement(current_announcement, announcements, 'schedule_page')
-        else:
-            # Це не початок оголошення - пропускаємо
+            if should_include:
+                current_announcement.append(next_para)
+            
             i += 1
+        
+        # Зберігаємо оголошення якщо воно має контент
+        if len(current_announcement) > 0:
+            _save_announcement(current_announcement, announcements, 'schedule_page')
+            logger.info(f"✅ Створено оголошення з {len(current_announcement)} параграфів")
     
     logger.info(f"Створено {len(announcements)} оголошень зі змін")
     return announcements

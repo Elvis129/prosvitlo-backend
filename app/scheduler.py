@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 # ВАЖЛИВО: Scheduler працює в київській часовій зоні
 scheduler = BackgroundScheduler(timezone='Europe/Kiev')
 
-# Зберігаємо хеші останніх оголошень щоб не спамити
-last_announcement_hashes = set()
-# Зберігаємо хеші окремих параграфів щоб уникнути часткового дублювання
-last_sent_paragraphs = set()
+# ЗМІНА: Замість in-memory sets, використовуємо БД для зберігання хешів
+# Це запобігає дублюванню повідомлень після перезавантаження сервера
+# Хеші завантажуються з БД при старті та оновлюються при відправці
+last_announcement_hashes = set()  # Буде завантажено з БД при старті
+last_sent_paragraphs = set()  # Буде завантажено з БД при старті
 
 
 def generate_outage_hash(outage):
@@ -43,6 +44,100 @@ def generate_outage_hash(outage):
     }
     data_str = json.dumps(key_data, sort_keys=True)
     return hashlib.md5(data_str.encode()).hexdigest()
+
+
+def load_sent_hashes_from_db():
+    """
+    Завантажує хеші відправлених оголошень з БД при старті сервера
+    Це запобігає повторній відправці після перезавантаження
+    """
+    global last_announcement_hashes, last_sent_paragraphs
+    
+    db: Session = SessionLocal()
+    try:
+        from app.models import SentAnnouncementHash
+        from datetime import datetime, timedelta
+        
+        # Завантажуємо хеші за останні 7 днів (старіші можна ігнорувати)
+        cutoff_date = datetime.now(KYIV_TZ) - timedelta(days=7)
+        
+        recent_hashes = db.query(SentAnnouncementHash).filter(
+            SentAnnouncementHash.created_at >= cutoff_date
+        ).all()
+        
+        for hash_record in recent_hashes:
+            if hash_record.announcement_type == 'paragraph':
+                last_sent_paragraphs.add(hash_record.content_hash)
+            else:
+                last_announcement_hashes.add(hash_record.content_hash)
+        
+        logger.info(f"📥 Завантажено з БД: {len(last_announcement_hashes)} хешів оголошень, "
+                   f"{len(last_sent_paragraphs)} хешів параграфів")
+        
+    except Exception as e:
+        logger.error(f"❌ Помилка завантаження хешів з БД: {e}")
+    finally:
+        db.close()
+
+
+def save_sent_hash_to_db(content_hash: str, announcement_type: str = 'general', title: str = None):
+    """
+    Зберігає хеш відправленого оголошення в БД
+    
+    Args:
+        content_hash: MD5 хеш контенту
+        announcement_type: 'general', 'schedule', або 'paragraph'
+        title: Заголовок для довідки (опціонально)
+    """
+    db: Session = SessionLocal()
+    try:
+        from app.models import SentAnnouncementHash
+        
+        # Перевіряємо чи вже існує
+        existing = db.query(SentAnnouncementHash).filter(
+            SentAnnouncementHash.content_hash == content_hash
+        ).first()
+        
+        if not existing:
+            new_hash = SentAnnouncementHash(
+                content_hash=content_hash,
+                announcement_type=announcement_type,
+                title=title[:100] if title else None  # Обмежуємо довжину
+            )
+            db.add(new_hash)
+            db.commit()
+            logger.debug(f"💾 Збережено хеш в БД: {content_hash[:8]}... (type: {announcement_type})")
+        
+    except Exception as e:
+        logger.error(f"❌ Помилка збереження хешу в БД: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def cleanup_old_sent_hashes():
+    """Видаляє старі хеші (старіші 30 днів)"""
+    db: Session = SessionLocal()
+    try:
+        from app.models import SentAnnouncementHash
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now(KYIV_TZ) - timedelta(days=30)
+        
+        deleted = db.query(SentAnnouncementHash).filter(
+            SentAnnouncementHash.created_at < cutoff_date
+        ).delete()
+        
+        db.commit()
+        
+        if deleted > 0:
+            logger.info(f"🧹 Видалено {deleted} старих хешів оголошень")
+        
+    except Exception as e:
+        logger.error(f"❌ Помилка очищення старих хешів: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def cleanup_old_schedules():
@@ -418,6 +513,7 @@ def check_and_notify_announcements():
     Відправляє push ТІЛЬКИ якщо є НОВІ оголошення
     + Витягує часові проміжки для черг та створює додаткові пуші
     + Фільтрує вже відправлені параграфи для запобігання дублювання
+    + Зберігає хеші в БД для запобігання дублюванню після перезавантаження
     """
     global last_announcement_hashes, last_sent_paragraphs
     from app.services import firebase_service
@@ -459,6 +555,8 @@ def check_and_notify_announcements():
                 if para_hash not in last_sent_paragraphs:
                     new_paragraphs.append(para_stripped)
                     last_sent_paragraphs.add(para_hash)
+                    # ⭐ Зберігаємо хеш параграфа в БД
+                    save_sent_hash_to_db(para_hash, announcement_type='paragraph')
                 else:
                     logger.info(f"⏭️ Пропущено вже відправлений параграф: {para_stripped[:50]}...")
             
@@ -466,6 +564,8 @@ def check_and_notify_announcements():
             if not new_paragraphs:
                 logger.info(f"ℹ️ Всі параграфи в оголошенні '{announcement['title']}' вже були відправлені")
                 last_announcement_hashes.add(content_hash)
+                # ⭐ Зберігаємо хеш оголошення в БД
+                save_sent_hash_to_db(content_hash, announcement_type='general', title=announcement['title'])
                 continue
             
             # Формуємо текст тільки з НОВИХ параграфів
@@ -500,6 +600,8 @@ def check_and_notify_announcements():
                 
                 # Запам'ятовуємо що відправили
                 last_announcement_hashes.add(content_hash)
+                # ⭐ Зберігаємо хеш оголошення в БД
+                save_sent_hash_to_db(content_hash, announcement_type='general', title=title)
                 
                 # Відправляємо ВІДФІЛЬТРОВАНИЙ текст в Telegram канал
                 telegram = get_telegram_service()
@@ -1942,6 +2044,10 @@ def start_scheduler():
     print(f"🔵 [SCHEDULER] start_scheduler ВИКЛИКАНО", flush=True)
     logger.info("🔵 [SCHEDULER] start_scheduler ВИКЛИКАНО")
     
+    # ⭐ ЗАВАНТАЖУЄМО ХЕШІ З БД при старті
+    logger.info("📥 Завантаження хешів відправлених оголошень з БД...")
+    load_sent_hashes_from_db()
+    
     # Не виконуємо одразу при старті - дозволяємо uvicorn швидко стартувати
     # Перше оновлення відбудеться через 10 секунд після запуску
     from datetime import datetime, timedelta
@@ -1997,6 +2103,9 @@ def start_scheduler():
     # Очищення неактивних пристроїв та адрес - щодня о 4:30
     scheduler.add_job(cleanup_inactive_devices, 'cron', hour=4, minute=30, id='cleanup_devices')
     
+    # ⭐ Очищення старих хешів оголошень - щодня о 5:00
+    scheduler.add_job(cleanup_old_sent_hashes, 'cron', hour=5, minute=0, id='cleanup_hashes')
+    
     print(f"🔵 [SCHEDULER] Викликаємо scheduler.start()", flush=True)
     scheduler.start()
     print(f"✅ [SCHEDULER] scheduler.start() завершено успішно", flush=True)
@@ -2019,6 +2128,7 @@ def start_scheduler():
     logger.info("  🧹 Очищення відключень: щодня о 2:00")
     logger.info("  🧹 Очищення повідомлень: щодня о 3:00")
     logger.info("  🧹 Очищення неактивних пристроїв: щодня о 4:30")
+    logger.info("  🧹 Очищення хешів оголошень: щодня о 5:00")
     logger.info("=" * 60)
 
 

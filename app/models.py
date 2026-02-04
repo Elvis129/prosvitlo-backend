@@ -301,3 +301,24 @@ class NoScheduleNotificationState(Base):
         return f"<NoScheduleNotificationState(enabled={self.enabled}, days_without={self.consecutive_days_without_schedule})>"
 
 
+class SentAnnouncementHash(Base):
+    """
+    Модель для зберігання хешів відправлених оголошень
+    Запобігає дублюванню повідомлень після перезавантаження сервера
+    """
+    __tablename__ = "sent_announcement_hashes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    content_hash = Column(String, unique=True, nullable=False, index=True)  # MD5 хеш контенту оголошення
+    announcement_type = Column(String, nullable=False, default='general')  # 'general', 'schedule', 'paragraph'
+    title = Column(String, nullable=True)  # Заголовок для довідки
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    
+    __table_args__ = (
+        Index('idx_sent_hash_created', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<SentAnnouncementHash(hash={self.content_hash[:8]}..., type={self.announcement_type})>"
+
+
