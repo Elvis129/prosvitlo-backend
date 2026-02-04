@@ -162,6 +162,8 @@ async def get_outage_status(
         # ⭐ ДОДАЄМО проміжки з оголошень (AnnouncementOutage)
         from app.models import AnnouncementOutage
         
+        logger.info(f"🔍 Перевірка announcement_outages для черги '{queue}' (clean: '{queue_clean}') на {target_date}")
+        
         # Шукаємо за різними форматами черги
         announcement_outages = db.query(AnnouncementOutage).filter(
             AnnouncementOutage.date == target_date,
@@ -171,7 +173,8 @@ async def get_outage_status(
             (AnnouncementOutage.queue == queue)
         ).all()
         
-        logger.info(f"🔍 Перевірка announcement_outages для черги '{queue}' (clean: '{queue_clean}') на {target_date}")
+        logger.info(f"📊 SQL query: date={target_date}, queue_clean={queue_clean}, queue={queue}")
+        logger.info(f"📊 Результат query: знайдено {len(announcement_outages)} записів")
         
         # Визначаємо формат даних і об'єднуємо з announcement_outages
         if isinstance(user_data, dict):
@@ -189,8 +192,21 @@ async def get_outage_status(
             for ao in announcement_outages:
                 logger.info(f"  ➕ Додаємо: {ao.start_hour}:00-{ao.end_hour}:00 (queue={ao.queue})")
                 user_intervals.append((ao.start_hour, ao.end_hour))
-            # Сортуємо по часу початку
+            
+            # ⭐ ОБ'ЄДНУЄМО перекриваючіся та суміжні інтервали
+            logger.info(f"📊 До об'єднання: {user_intervals}")
             user_intervals = sorted(user_intervals, key=lambda x: x[0])
+            merged_intervals = []
+            for start, end in user_intervals:
+                if merged_intervals and start <= merged_intervals[-1][1]:
+                    # Перекриваються або суміжні - об'єднуємо
+                    prev_start, prev_end = merged_intervals[-1]
+                    merged_intervals[-1] = (prev_start, max(prev_end, end))
+                else:
+                    # Новий окремий інтервал
+                    merged_intervals.append((start, end))
+            user_intervals = merged_intervals
+            logger.info(f"📊 Після об'єднання: {user_intervals}")
         else:
             logger.info(f"ℹ️ Додаткових проміжків з оголошень не знайдено для черги {queue_clean}")
         
