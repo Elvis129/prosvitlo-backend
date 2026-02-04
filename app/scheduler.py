@@ -647,11 +647,119 @@ def parse_queue_times_from_announcement(text: str) -> List[Dict[str, Any]]:
     return results
 
 
+def apply_announcement_modifications_to_schedule(db: Session, target_date: date, queue_times: List[Dict[str, Any]]):
+    """
+    Модифікує графік в БД на основі оголошень про зміни
+    
+    Логіка:
+    - "почнеться раніше о 19:00" → знаходимо найближчий інтервал ПІСЛЯ 19:00, об'єднуємо
+    - "триватиме до 13:00" → знаходимо найближчий інтервал ПЕРЕД 13:00, розширюємо кінець
+    - "триватиме довше до 13:00" → теж саме
+    - Повний проміжок "з 00:00 до 06:00" → додаємо як новий інтервал
+    """
+    from app.models import Schedule
+    import json
+    
+    # Витягуємо графік з БД
+    schedule = db.query(Schedule).filter(Schedule.date == target_date).first()
+    if not schedule:
+        logger.warning(f"⚠️ Графік для {target_date} не знайдено в БД, не можемо застосувати модифікації")
+        return False
+    
+    if not schedule.parsed_data:
+        logger.warning(f"⚠️ Графік для {target_date} не має parsed_data, не можемо застосувати модифікації")
+        return False
+    
+    # Парсимо JSON з інтервалами
+    try:
+        schedule_data = json.loads(schedule.parsed_data)
+    except:
+        logger.error(f"❌ Помилка парсингу parsed_data для {target_date}")
+        return False
+    
+    modified = False
+    
+    for qt in queue_times:
+        if not qt['is_power_off']:
+            continue
+            
+        queue = qt['queue']
+        action_type = qt['action_type']
+        
+        # Знаходимо інтервали для цієї черги
+        if queue not in schedule_data:
+            logger.warning(f"⚠️ Черга {queue} не знайдена в графіку")
+            continue
+        
+        intervals = schedule_data[queue]  # List[(start, end), ...]
+        
+        if action_type == 'full_range':
+            # Повний проміжок - додаємо якщо немає
+            new_interval = (qt['start_hour'], qt['end_hour'])
+            if new_interval not in intervals:
+                intervals.append(new_interval)
+                intervals.sort()
+                modified = True
+                logger.info(f"➕ Додано інтервал {queue}: {qt['start_hour']}:00-{qt['end_hour']}:00")
+        
+        elif action_type in ['earlier_start_dash', 'earlier_start_no_dash']:
+            # "почнеться раніше о X:00" - шукаємо найближчий інтервал ПІСЛЯ X:00
+            new_start = qt['start_hour']
+            
+            # Знаходимо перший інтервал що починається >= new_start
+            target_interval = None
+            target_idx = None
+            for idx, (start, end) in enumerate(intervals):
+                if start >= new_start:
+                    target_interval = (start, end)
+                    target_idx = idx
+                    break
+            
+            if target_interval:
+                # Об'єднуємо: новий початок + старий кінець
+                old_start, old_end = target_interval
+                intervals[target_idx] = (new_start, old_end)
+                modified = True
+                logger.info(f"🔧 Модифіковано {queue}: {old_start}:00-{old_end}:00 → {new_start}:00-{old_end}:00 (раніше)")
+            else:
+                logger.warning(f"⚠️ Не знайдено інтервал після {new_start}:00 для черги {queue}")
+        
+        elif action_type in ['longer_end_dash', 'simple_end']:
+            # "триватиме до X:00" - шукаємо найближчий інтервал ПЕРЕД X:00
+            new_end = qt['end_hour']
+            
+            # Знаходимо останній інтервал що закінчується <= new_end
+            target_interval = None
+            target_idx = None
+            for idx, (start, end) in enumerate(intervals):
+                if end <= new_end:
+                    target_interval = (start, end)
+                    target_idx = idx
+            
+            if target_interval:
+                # Розширюємо: старий початок + новий кінець
+                old_start, old_end = target_interval
+                intervals[target_idx] = (old_start, new_end)
+                modified = True
+                logger.info(f"🔧 Модифіковано {queue}: {old_start}:00-{old_end}:00 → {old_start}:00-{new_end}:00 (довше)")
+            else:
+                logger.warning(f"⚠️ Не знайдено інтервал перед {new_end}:00 для черги {queue}")
+    
+    if modified:
+        # Зберігаємо оновлений графік в БД
+        schedule.parsed_data = json.dumps(schedule_data, ensure_ascii=False)
+        db.commit()
+        logger.info(f"💾 Оновлено графік в БД для {target_date}")
+        return True
+    
+    return False
+
+
 def check_and_notify_announcements():
     """
     Перевіряє загальні оголошення з сайту кожні 5 хвилин
     Відправляє push ТІЛЬКИ якщо є НОВІ оголошення
-    + Витягує часові проміжки для черг та створює додаткові пуші
+    + Витягує часові проміжки для черг та МОДИФІКУЄ графік в БД
     + Фільтрує вже відправлені параграфи для запобігання дублювання
     + Зберігає хеші в БД для запобігання дублюванню після перезавантаження
     """
@@ -675,7 +783,7 @@ def check_and_notify_announcements():
             full_body = announcement.get('full_body', announcement['body'])
             
             # ⭐ ВАЖЛИВО: Парсимо часові проміжки ЗАВЖДИ (навіть якщо оголошення старе)
-            # Це потрібно щоб оновлювати announcement_outages навіть для існуючих оголошень
+            # Це потрібно щоб модифікувати графік навіть для існуючих оголошень
             queue_times = parse_queue_times_from_announcement(full_body)
             if queue_times:
                 logger.info(f"🕐 Знайдено {len(queue_times)} часових проміжків для черг в оголошенні")
@@ -683,40 +791,12 @@ def check_and_notify_announcements():
                 now = datetime.now(KYIV_TZ)
                 today_date = now.date()
                 
-                from app.models import AnnouncementOutage
-                
-                for qt in queue_times:
-                    if qt['is_power_off']:
-                        queue = qt['queue']
-                        start_hour = qt['start_hour']
-                        end_hour = qt['end_hour']
-                        
-                        # Зберігаємо в БД (якщо немає такого запису)
-                        try:
-                            existing = db.query(AnnouncementOutage).filter(
-                                AnnouncementOutage.date == today_date,
-                                AnnouncementOutage.queue == queue,
-                                AnnouncementOutage.start_hour == start_hour,
-                                AnnouncementOutage.end_hour == end_hour
-                            ).first()
-                            
-                            if not existing:
-                                announcement_outage = AnnouncementOutage(
-                                    date=today_date,
-                                    queue=queue,
-                                    start_hour=start_hour,
-                                    end_hour=end_hour,
-                                    announcement_text=full_body[:500],
-                                    is_active=True
-                                )
-                                db.add(announcement_outage)
-                                db.commit()
-                                logger.info(f"💾 Збережено в БД: черга {queue}, {start_hour}:00-{end_hour}:00")
-                            else:
-                                logger.debug(f"ℹ️ Запис про відключення черги {queue} вже існує")
-                        except Exception as db_error:
-                            logger.error(f"❌ Помилка збереження в БД: {db_error}")
-                            db.rollback()
+                # Застосовуємо модифікації до графіка в БД
+                schedule_modified = apply_announcement_modifications_to_schedule(db, today_date, queue_times)
+                if schedule_modified:
+                    logger.info(f"✅ Графік для {today_date} успішно модифіковано")
+                else:
+                    logger.info(f"ℹ️ Графік не модифіковано (немає змін або немає графіка)")
             
             # Якщо цей хеш вже бачили - пропускаємо ВІДПРАВКУ (але час вже спарсили вище)
             if content_hash in last_announcement_hashes:

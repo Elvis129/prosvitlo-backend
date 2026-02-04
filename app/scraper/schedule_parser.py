@@ -23,6 +23,7 @@ def fetch_schedule_images() -> List[Dict]:
         soup = BeautifulSoup(response.content, 'html.parser')
         
         schedules = []
+        schedules_by_date = {}  # Зберігаємо всі версії для кожної дати
         
         # Шукаємо всі img теги з графіками
         images = soup.find_all('img')
@@ -33,7 +34,7 @@ def fetch_schedule_images() -> List[Dict]:
             
             # Фільтруємо тільки графіки (файли з певним патерном)
             if 'file' in src and '.png' in src.lower() and 'ГПВ' in alt:
-                # Витягуємо дату з alt тексту (формат: ГПВ-06.12.25 або ГПВ-06.12.25_1)
+                # Витягуємо дату з alt тексту (формат: ГПВ-06.12.25 або ГПВ-06.12.25_1 або ГПВ-06.12.25-_02)
                 date_match = re.search(r'(\d{2})\.(\d{2})\.(\d{2})', alt)
                 if date_match:
                     day, month, year = date_match.groups()
@@ -51,13 +52,32 @@ def fetch_schedule_images() -> List[Dict]:
                     # Генеруємо хеш для перевірки змін
                     content_hash = generate_content_hash(src, text_schedule)
                     
-                    schedules.append({
+                    schedule_info = {
                         'date': schedule_date,
                         'image_url': src,
                         'alt_text': alt,
                         'recognized_text': text_schedule,
                         'content_hash': content_hash
-                    })
+                    }
+                    
+                    # Зберігаємо в dict - якщо для дати вже є графік, додаємо до списку
+                    if schedule_date not in schedules_by_date:
+                        schedules_by_date[schedule_date] = []
+                    schedules_by_date[schedule_date].append(schedule_info)
+        
+        # Для кожної дати беремо ОСТАННІЙ (найновіший) графік
+        # HOE додає суфікси типу "_02", "_03" до оновлених версій
+        for schedule_date, versions in schedules_by_date.items():
+            if len(versions) > 1:
+                logger.warning(f"⚠️ Знайдено {len(versions)} версій графіка для {schedule_date}")
+                for v in versions:
+                    logger.info(f"   - {v['alt_text']}: {v['image_url']}")
+                # Беремо останню версію (вона йде першою на сторінці)
+                selected = versions[0]
+                logger.info(f"✅ Вибрано ПЕРШУ версію (найновішу): {selected['alt_text']}")
+                schedules.append(selected)
+            else:
+                schedules.append(versions[0])
         
         return schedules
         
