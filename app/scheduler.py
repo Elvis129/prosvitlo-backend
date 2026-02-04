@@ -691,7 +691,13 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             logger.warning(f"⚠️ Черга {queue} не знайдена в графіку")
             continue
         
-        intervals = schedule_data[queue]  # List[(start, end), ...]
+        queue_data = schedule_data[queue]
+        
+        # Підтримка старого та нового формату
+        if isinstance(queue_data, dict):
+            intervals = queue_data.get('outages', [])
+        else:
+            intervals = queue_data
         
         if action_type == 'full_range':
             # Повний проміжок - додаємо якщо немає
@@ -701,6 +707,11 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
                 intervals.sort()
                 modified = True
                 logger.info(f"➕ Додано інтервал {queue}: {qt['start_hour']}:00-{qt['end_hour']}:00")
+            # Зберігаємо назад
+            if isinstance(queue_data, dict):
+                schedule_data[queue]['outages'] = intervals
+            else:
+                schedule_data[queue] = intervals
         
         elif action_type in ['earlier_start_dash', 'earlier_start_no_dash']:
             # "почнеться раніше о X:00" - шукаємо найближчий інтервал ПІСЛЯ X:00
@@ -709,7 +720,8 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             # Знаходимо перший інтервал що починається >= new_start
             target_interval = None
             target_idx = None
-            for idx, (start, end) in enumerate(intervals):
+            for idx, interval in enumerate(intervals):
+                start, end = interval if isinstance(interval, (list, tuple)) else (interval['start'], interval['end'])
                 if start >= new_start:
                     target_interval = (start, end)
                     target_idx = idx
@@ -718,9 +730,14 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             if target_interval:
                 # Об'єднуємо: новий початок + старий кінець
                 old_start, old_end = target_interval
-                intervals[target_idx] = (new_start, old_end)
+                intervals[target_idx] = [new_start, old_end]
                 modified = True
                 logger.info(f"🔧 Модифіковано {queue}: {old_start}:00-{old_end}:00 → {new_start}:00-{old_end}:00 (раніше)")
+                # Зберігаємо назад
+                if isinstance(queue_data, dict):
+                    schedule_data[queue]['outages'] = intervals
+                else:
+                    schedule_data[queue] = intervals
             else:
                 logger.warning(f"⚠️ Не знайдено інтервал після {new_start}:00 для черги {queue}")
         
@@ -731,7 +748,8 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             # Знаходимо останній інтервал що закінчується <= new_end
             target_interval = None
             target_idx = None
-            for idx, (start, end) in enumerate(intervals):
+            for idx, interval in enumerate(intervals):
+                start, end = interval if isinstance(interval, (list, tuple)) else (interval['start'], interval['end'])
                 if end <= new_end:
                     target_interval = (start, end)
                     target_idx = idx
@@ -739,9 +757,14 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             if target_interval:
                 # Розширюємо: старий початок + новий кінець
                 old_start, old_end = target_interval
-                intervals[target_idx] = (old_start, new_end)
+                intervals[target_idx] = [old_start, new_end]
                 modified = True
                 logger.info(f"🔧 Модифіковано {queue}: {old_start}:00-{old_end}:00 → {old_start}:00-{new_end}:00 (довше)")
+                # Зберігаємо назад
+                if isinstance(queue_data, dict):
+                    schedule_data[queue]['outages'] = intervals
+                else:
+                    schedule_data[queue] = intervals
             else:
                 logger.warning(f"⚠️ Не знайдено інтервал перед {new_end}:00 для черги {queue}")
     
