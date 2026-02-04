@@ -14,6 +14,7 @@ from app.database import get_db
 from app.services.address_service import get_address_info
 from app.scraper.schedule_parser import parse_queue_schedule
 from app import crud_schedules
+from app.models import AnnouncementOutage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -199,18 +200,60 @@ async def get_batch_status(
         if isinstance(user_data, dict):
             # Новий формат - об'єднуємо outages та possible для перевірки статусу
             all_intervals = user_data.get('outages', []) + user_data.get('possible', [])
+            user_intervals = list(user_data.get('outages', []))
+            possible_intervals = list(user_data.get('possible', []))
         else:
             # Старий формат - список кортежів
             all_intervals = user_data
+            user_intervals = list(user_data)
+            possible_intervals = []
+        
+        # ДОДАЄМО ІНТЕГРАЦІЮ З ANNOUNCEMENT_OUTAGES
+        # Шукаємо додаткові відключення з оголошень
+        announcement_records = db.query(AnnouncementOutage).filter(
+            AnnouncementOutage.date == target_date,
+            (AnnouncementOutage.queue == queue_clean) | (AnnouncementOutage.queue == queue)
+        ).all()
+        
+        logger.info(f"📊 Batch: queue={queue_clean}, date={target_date}, announcement records={len(announcement_records)}")
+        
+        for ao in announcement_records:
+            user_intervals.append((ao.start_hour, ao.end_hour))
+            logger.info(f"➕ Додано інтервал з оголошення: {ao.start_hour}-{ao.end_hour}")
+        
+        # ДОДАЄМО ФУНКЦІЮ MERGE
+        def merge_overlapping_intervals(intervals):
+            """Об'єднує інтервали що перетинаються або ідуть підряд"""
+            if not intervals:
+                return []
+            
+            # Сортуємо за початком
+            sorted_intervals = sorted(intervals, key=lambda x: x[0])
+            merged = [sorted_intervals[0]]
+            
+            for current in sorted_intervals[1:]:
+                last = merged[-1]
+                # Якщо інтервали перетинаються або торкаються (end >= current_start)
+                if last[1] >= current[0]:
+                    # Об'єднуємо, беручи максимальний кінець
+                    merged[-1] = (last[0], max(last[1], current[1]))
+                else:
+                    merged.append(current)
+            
+            return merged
+        
+        # Мерджимо інтервали
+        user_intervals = merge_overlapping_intervals(user_intervals)
+        logger.info(f"✅ Після merge: {user_intervals}")
+        
+        # Об'єднуємо всі інтервали для відображення
+        all_intervals = user_intervals + possible_intervals
         
         for interval in all_intervals:
             start_hour, end_hour = interval
             
             # Визначаємо чи це можливе відключення
-            is_possible_outage = False
-            if isinstance(user_data, dict):
-                # Перевіряємо чи інтервал з масиву possible
-                is_possible_outage = interval in user_data.get('possible', [])
+            is_possible_outage = interval in possible_intervals
             
             all_outages.append(OutageInterval(
                 start_hour=start_hour,
