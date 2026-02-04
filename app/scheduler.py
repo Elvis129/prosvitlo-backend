@@ -447,63 +447,203 @@ def schedule_queue_notifications(schedule_date: str, parsed_data: dict):
 def parse_queue_times_from_announcement(text: str) -> List[Dict[str, Any]]:
     """
     Витягує з тексту оголошення інформацію про черги та часові проміжки відключень
+    ВАЖЛИВО: Може знаходити КІЛЬКА згадок однієї черги з різними часами!
     
-    Приклади:
-    - "підчергу 6.2 з 10:00 до 14:00"
-    - "споживачів підчерги 3.1 з 09:00 до 12:00"
-    - "черга 4.2 буде відключена з 15:00 до 19:00"
+    ПІДТРИМУВАНІ ФОРМАТИ:
+    1. Повний проміжок: "підчергу 3.2 з 19:00 до 24:00"
+    2. Раніший початок з тире: "Підчерга 3.2 - відключення розпочнеться раніше - о 19:00"
+    3. Раніший початок без тире: "Підчерга 4.1 - відключення розпочнеться раніше о 07:00"
+    4. Довший кінець з тире: "Підчерга 6.1 - відключення триватиме довше - до 21:00"
+    5. Просто кінець: "Підчерга 2.1 - відключення триватиме до 11:00"
+    6. Простий: "черга 5.2 до 18:00"
+    7. Простий: "черга 4.1 з 08:00"
+    8. Варіації: "вимкнення", "знеструмлення", "почнеться", "продовжиться"
     
     Returns:
-        List[Dict] з полями: queue, start_hour, end_hour, is_power_on (True якщо "заживлення")
+        List[Dict] з полями: queue, start_hour, end_hour, is_power_on, action_type
     """
     import re
-    from datetime import datetime
     
     results = []
+    processed_positions = set()  # Позиції в тексті щоб не дублювати один і той самий матч
     
-    # Паттерн для пошуку черг та часових проміжків
-    # Шукаємо: "підчерг[уи]?" + "X.Y" + "з" + "HH:MM" + "до" + "HH:MM"
-    pattern = r'підчерг[уиі]?\s+(\d+\.\d+)\s+з\s+(\d{1,2}):(\d{2})\s+до\s+(\d{1,2}):(\d{2})'
+    # ============= ПАТТЕРН 1: Повний формат "з HH:MM до HH:MM" =============
+    pattern1 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+з\s+(\d{1,2}):(\d{2})\s+до\s+(\d{1,2}):(\d{2})'
     
-    matches = re.finditer(pattern, text, re.IGNORECASE)
-    
-    for match in matches:
-        queue = match.group(1)  # Наприклад "6.2"
+    for match in re.finditer(pattern1, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
         start_hour = int(match.group(2))
         start_min = int(match.group(3))
         end_hour = int(match.group(4))
         end_min = int(match.group(5))
         
-        # Визначаємо чи це увімкнення світла (заживлення) чи відключення
-        # Шукаємо ключові слова перед згадкою черги
-        context_before = text[:match.start()].lower()
-        is_power_on = 'заживлення' in context_before or 'повернення' in context_before or 'відновлення' in context_before
-        is_power_off = 'знеструмлен' in context_before or 'відключен' in context_before or 'вимкнен' in context_before
+        if start_min != 0 or end_min != 0:
+            logger.warning(f"⚠️ Округлення: {start_hour}:{start_min:02d}-{end_hour}:{end_min:02d} → {start_hour}:00-{end_hour}:00")
         
-        # Якщо не знайшли контекст, шукаємо після
-        if not is_power_on and not is_power_off:
-            context_after = text[match.end():match.end()+50].lower()
-            is_power_on = 'заживлення' in context_after or 'повернення' in context_after
-            is_power_off = 'знеструмлен' in context_after or 'відключен' in context_after
-        
-        # Якщо хвилини не 00, округлюємо до годин (для сумісності з поточною системою)
-        if start_min != 0:
-            logger.warning(f"⚠️ Оголошення містить хвилини ({start_hour}:{start_min}), округляємо до {start_hour}:00")
-        if end_min != 0:
-            logger.warning(f"⚠️ Оголошення містить хвилини ({end_hour}:{end_min}), округляємо до {end_hour}:00")
+        context = text[:match.start()].lower() + match.group(0).lower()
+        is_power_on = any(w in context for w in ['заживлення', 'повернення', 'відновлення'])
         
         results.append({
             'queue': queue,
             'start_hour': start_hour,
             'end_hour': end_hour,
             'is_power_on': is_power_on,
-            'is_power_off': is_power_off,
+            'is_power_off': not is_power_on,
+            'action_type': 'full_range',
             'matched_text': match.group(0)
         })
-        
-        logger.info(f"📋 Витягнуто з оголошення: черга {queue}, {start_hour}:00-{end_hour}:00, "
-                   f"{'✅ заживлення' if is_power_on else '⚡ відключення' if is_power_off else '❓ невизначено'}")
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [ПОВНИЙ] Черга {queue}: {start_hour}:00-{end_hour}:00")
     
+    # ============= ПАТТЕРН 2: "розпочнеться/почнеться раніше" з тире =============
+    # "Підчерга 3.2 - відключення розпочнеться раніше - о 19:00"
+    pattern2 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+[-–—]\s+(?:від|ви|зне)?(?:ключення|мкнення|струмлення)\s+(?:розпочнеться|почнеться)\s+раніше\s+[-–—]\s+о\s+(\d{1,2}):(\d{2})'
+    
+    for match in re.finditer(pattern2, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': hour,
+            'end_hour': 24,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'earlier_start_dash',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [РАНІШЕ-ТИРЕ] Черга {queue}: початок о {hour}:00")
+    
+    # ============= ПАТТЕРН 3: "розпочнеться/почнеться раніше" БЕЗ тире перед "о" =============
+    # "Підчерга 4.1 - відключення розпочнеться раніше о 07:00"
+    pattern3 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+[-–—]\s+(?:від|ви|зне)?(?:ключення|мкнення|струмлення)\s+(?:розпочнеться|почнеться)\s+раніше\s+о\s+(\d{1,2}):(\d{2})'
+    
+    for match in re.finditer(pattern3, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': hour,
+            'end_hour': 24,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'earlier_start_no_dash',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [РАНІШЕ] Черга {queue}: початок о {hour}:00")
+    
+    # ============= ПАТТЕРН 4: "триватиме/продовжиться довше" з тире =============
+    # "Підчерга 6.1 - відключення триватиме довше - до 21:00"
+    pattern4 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+[-–—]\s+(?:від|ви|зне)?(?:ключення|мкнення|струмлення)\s+(?:триватиме|продовжиться)\s+довше\s+[-–—]\s+до\s+(\d{1,2}):(\d{2})'
+    
+    for match in re.finditer(pattern4, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': 0,
+            'end_hour': hour,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'longer_end',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [ДОВШЕ] Черга {queue}: кінець до {hour}:00")
+    
+    # ============= ПАТТЕРН 5: "триватиме/продовжиться до" БЕЗ "довше" =============
+    # "Підчерга 2.1 - відключення триватиме до 11:00"
+    pattern5 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+[-–—]\s+(?:від|ви|зне)?(?:ключення|мкнення|струмлення)\s+(?:триватиме|продовжиться)\s+до\s+(\d{1,2}):(\d{2})'
+    
+    for match in re.finditer(pattern5, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': 0,
+            'end_hour': hour,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'end_time',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [КІНЕЦЬ] Черга {queue}: триватиме до {hour}:00")
+    
+    # ============= ПАТТЕРН 6: Простий формат "черга X.X до HH:MM" =============
+    # "черга 5.2 до 18:00"
+    pattern6 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+до\s+(\d{1,2}):(\d{2})'
+    
+    for match in re.finditer(pattern6, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': 0,
+            'end_hour': hour,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'simple_end',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [ПРОСТИЙ-КІНЕЦЬ] Черга {queue}: до {hour}:00")
+    
+    # ============= ПАТТЕРН 7: Простий формат "черга X.X з HH:MM" =============
+    # "черга 5.2 з 08:00" (БЕЗ "до" після)
+    pattern7 = r'(?:підчерг[ауиі]?|черг[ауиі]?)\s+(\d+\.\d+)\s+з\s+(\d{1,2}):(\d{2})(?!\s+до)'
+    
+    for match in re.finditer(pattern7, text, re.IGNORECASE):
+        pos_key = (match.start(), match.end())
+        if pos_key in processed_positions:
+            continue
+        
+        queue = match.group(1)
+        hour = int(match.group(2))
+        
+        results.append({
+            'queue': queue,
+            'start_hour': hour,
+            'end_hour': 24,
+            'is_power_on': False,
+            'is_power_off': True,
+            'action_type': 'simple_start',
+            'matched_text': match.group(0)
+        })
+        processed_positions.add(pos_key)
+        logger.info(f"📋 [ПРОСТИЙ-ПОЧАТОК] Черга {queue}: з {hour}:00")
+    
+    logger.info(f"📊 Всього знайдено {len(results)} часових проміжків для черг")
     return results
 
 
