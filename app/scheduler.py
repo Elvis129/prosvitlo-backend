@@ -672,13 +672,57 @@ def check_and_notify_announcements():
         
         for announcement in announcements:
             content_hash = announcement['content_hash']
+            full_body = announcement.get('full_body', announcement['body'])
             
-            # Якщо цей хеш вже бачили - пропускаємо
+            # ⭐ ВАЖЛИВО: Парсимо часові проміжки ЗАВЖДИ (навіть якщо оголошення старе)
+            # Це потрібно щоб оновлювати announcement_outages навіть для існуючих оголошень
+            queue_times = parse_queue_times_from_announcement(full_body)
+            if queue_times:
+                logger.info(f"🕐 Знайдено {len(queue_times)} часових проміжків для черг в оголошенні")
+                
+                now = datetime.now(KYIV_TZ)
+                today_date = now.date()
+                
+                from app.models import AnnouncementOutage
+                
+                for qt in queue_times:
+                    if qt['is_power_off']:
+                        queue = qt['queue']
+                        start_hour = qt['start_hour']
+                        end_hour = qt['end_hour']
+                        
+                        # Зберігаємо в БД (якщо немає такого запису)
+                        try:
+                            existing = db.query(AnnouncementOutage).filter(
+                                AnnouncementOutage.date == today_date,
+                                AnnouncementOutage.queue == queue,
+                                AnnouncementOutage.start_hour == start_hour,
+                                AnnouncementOutage.end_hour == end_hour
+                            ).first()
+                            
+                            if not existing:
+                                announcement_outage = AnnouncementOutage(
+                                    date=today_date,
+                                    queue=queue,
+                                    start_hour=start_hour,
+                                    end_hour=end_hour,
+                                    announcement_text=full_body[:500],
+                                    is_active=True
+                                )
+                                db.add(announcement_outage)
+                                db.commit()
+                                logger.info(f"💾 Збережено в БД: черга {queue}, {start_hour}:00-{end_hour}:00")
+                            else:
+                                logger.debug(f"ℹ️ Запис про відключення черги {queue} вже існує")
+                        except Exception as db_error:
+                            logger.error(f"❌ Помилка збереження в БД: {db_error}")
+                            db.rollback()
+            
+            # Якщо цей хеш вже бачили - пропускаємо ВІДПРАВКУ (але час вже спарсили вище)
             if content_hash in last_announcement_hashes:
                 continue
             
             # ⭐ НОВА ЛОГІКА: Фільтруємо вже відправлені параграфи з повідомлення
-            full_body = announcement.get('full_body', announcement['body'])
             paragraphs = full_body.split('\n\n')
             
             # Знаходимо нові параграфи (які ще не відправляли)
@@ -758,87 +802,6 @@ def check_and_notify_announcements():
                 else:
                     logger.warning(f"⚠️ Telegram сервіс не ініціалізований")
                 logger.info(f"✅ Відправлено оголошення ВСІМ: {title}")
-                
-                # ⭐ ФУНКЦІОНАЛ: Парсимо часові проміжки для черг
-                queue_times = parse_queue_times_from_announcement(filtered_body)
-                if queue_times:
-                    logger.info(f"🕐 Знайдено {len(queue_times)} часових проміжків для черг в оголошенні")
-                    
-                    # Отримуємо поточну дату для створення jobs
-                    now = datetime.now(KYIV_TZ)
-                    today_str = now.strftime('%Y-%m-%d')
-                    today_date = now.date()
-                    
-                    from app.models import AnnouncementOutage
-                    
-                    for qt in queue_times:
-                        # Створюємо пуш тільки для ВІДКЛЮЧЕНЬ (is_power_off=True)
-                        # Заживлення (is_power_on) - це повернення світла, не потребує окремого пушу
-                        if qt['is_power_off']:
-                            queue = qt['queue']
-                            start_hour = qt['start_hour']
-                            end_hour = qt['end_hour']
-                            
-                            logger.info(f"📅 Обробка додаткового відключення черги {queue}: {start_hour}:00-{end_hour}:00")
-                            
-                            # ⭐ Зберігаємо в БД
-                            try:
-                                # Перевіряємо чи вже є такий запис
-                                existing = db.query(AnnouncementOutage).filter(
-                                    AnnouncementOutage.date == today_date,
-                                    AnnouncementOutage.queue == queue,
-                                    AnnouncementOutage.start_hour == start_hour,
-                                    AnnouncementOutage.end_hour == end_hour
-                                ).first()
-                                
-                                if existing:
-                                    logger.info(f"ℹ️ Запис про відключення черги {queue} вже існує в БД")
-                                else:
-                                    # Створюємо новий запис
-                                    announcement_outage = AnnouncementOutage(
-                                        date=today_date,
-                                        queue=queue,
-                                        start_hour=start_hour,
-                                        end_hour=end_hour,
-                                        announcement_text=filtered_body[:500],  # Зберігаємо перші 500 символів
-                                        is_active=True
-                                    )
-                                    db.add(announcement_outage)
-                                    db.commit()
-                                    logger.info(f"💾 Збережено в БД: черга {queue}, {start_hour}:00-{end_hour}:00")
-                                
-                            except Exception as db_error:
-                                logger.error(f"❌ Помилка збереження в БД: {db_error}")
-                                db.rollback()
-                            
-                            # Створюємо job за 10 хвилин до відключення (як для звичайних графіків)
-                            notification_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-                            notification_time = notification_time - timedelta(minutes=10)
-                            
-                            # Якщо час вже минув сьогодні, не створюємо job
-                            if notification_time < now:
-                                logger.warning(f"⚠️ Час нотифікації {notification_time.strftime('%H:%M')} вже минув, пропускаємо")
-                                continue
-                            
-                            job_id = f"queue_announcement_{queue}_{start_hour}_{now.strftime('%Y%m%d%H%M%S')}"
-                            
-                            try:
-                                scheduler.add_job(
-                                    send_queue_notification,
-                                    trigger='date',
-                                    run_date=notification_time,
-                                    args=[today_str, queue, start_hour, end_hour],
-                                    id=job_id,
-                                    replace_existing=True,
-                                    misfire_grace_time=300
-                                )
-                                logger.info(f"✅ Заплановано пуш для черги {queue} (з оголошення) на {notification_time.strftime('%H:%M')}")
-                            except Exception as job_error:
-                                logger.error(f"❌ Помилка створення job для черги {queue}: {job_error}")
-                        elif qt['is_power_on']:
-                            logger.info(f"ℹ️ Пропускаємо заживлення черги {qt['queue']} (не потребує окремого пушу)")
-                        else:
-                            logger.warning(f"⚠️ Не вдалося визначити тип події для черги {qt['queue']}, пропускаємо")
         
         # Очищаємо старі хеші (залишаємо останні 100)
         if len(last_announcement_hashes) > 100:
