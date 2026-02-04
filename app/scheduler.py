@@ -741,7 +741,7 @@ def apply_announcement_modifications_to_schedule(db: Session, target_date: date,
             else:
                 logger.warning(f"⚠️ Не знайдено інтервал після {new_start}:00 для черги {queue}")
         
-        elif action_type in ['longer_end_dash', 'simple_end']:
+        elif action_type in ['longer_end_dash', 'simple_end', 'end_time', 'longer_end']:
             # "триватиме до X:00" - шукаємо найближчий інтервал ПЕРЕД X:00
             new_end = qt['end_hour']
             

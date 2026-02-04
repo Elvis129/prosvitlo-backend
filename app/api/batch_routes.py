@@ -73,14 +73,16 @@ async def get_batch_status(
     """
     from datetime import datetime
     
-    # Визначаємо дату
+    # Визначаємо дату (використовуємо київський час!)
     if request.schedule_date:
         try:
             target_date = datetime.strptime(request.schedule_date, "%Y-%m-%d").date()
         except ValueError:
             raise HTTPException(status_code=400, detail="Невірний формат дати. Використовуйте YYYY-MM-DD")
     else:
-        target_date = date.today()
+        # Використовуємо київський час для визначення сьогоднішньої дати
+        kyiv_now = datetime.now(KYIV_TZ)
+        target_date = kyiv_now.date()
     
     # Отримуємо графік один раз для всіх адрес
     schedule = crud_schedules.get_schedule_by_date(db, target_date)
