@@ -113,10 +113,12 @@ def _check_schedule_page_changes() -> List[Dict[str, str]]:
         announcements = _analyze_changes(template_content, current_content)
         
         # Оновлюємо шаблон (якщо зміни не критичні)
-        # Шаблон НЕ оновлюється якщо є важливі оголошення
+        # Шаблон НЕ оновлюється якщо є важливі оголошення або згадки черг
         has_important = any(
             'UPD' in a.get('title', '') or 
-            'Збільшення обсягу' in a.get('title', '') 
+            'Збільшення обсягу' in a.get('title', '') or
+            'підчерг' in a.get('full_body', '').lower() or
+            'черг' in a.get('full_body', '').lower()
             for a in announcements
         )
         
@@ -124,6 +126,8 @@ def _check_schedule_page_changes() -> List[Dict[str, str]]:
             # Це просто оновлення сторінки без важливих оголошень
             _save_template(current_content, current_hash)
             logger.info("✓ Оновлено базовий шаблон")
+        elif has_important:
+            logger.info("⚠️ Шаблон НЕ оновлено - є важливі оголошення про черги")
         
         return announcements
         

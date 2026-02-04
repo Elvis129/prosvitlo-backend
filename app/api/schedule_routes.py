@@ -161,11 +161,17 @@ async def get_outage_status(
         
         # ⭐ ДОДАЄМО проміжки з оголошень (AnnouncementOutage)
         from app.models import AnnouncementOutage
+        
+        # Шукаємо за різними форматами черги
         announcement_outages = db.query(AnnouncementOutage).filter(
             AnnouncementOutage.date == target_date,
-            AnnouncementOutage.queue == queue_clean,
             AnnouncementOutage.is_active == True
+        ).filter(
+            (AnnouncementOutage.queue == queue_clean) | 
+            (AnnouncementOutage.queue == queue)
         ).all()
+        
+        logger.info(f"🔍 Перевірка announcement_outages для черги '{queue}' (clean: '{queue_clean}') на {target_date}")
         
         # Визначаємо формат даних і об'єднуємо з announcement_outages
         if isinstance(user_data, dict):
@@ -181,9 +187,12 @@ async def get_outage_status(
             logger.info(f"📢 Знайдено {len(announcement_outages)} додаткових проміжків з оголошень для черги {queue_clean}")
             # Конвертуємо в той же формат (start, end) і додаємо до user_intervals
             for ao in announcement_outages:
+                logger.info(f"  ➕ Додаємо: {ao.start_hour}:00-{ao.end_hour}:00 (queue={ao.queue})")
                 user_intervals.append((ao.start_hour, ao.end_hour))
             # Сортуємо по часу початку
             user_intervals = sorted(user_intervals, key=lambda x: x[0])
+        else:
+            logger.info(f"ℹ️ Додаткових проміжків з оголошень не знайдено для черги {queue_clean}")
         
         if not user_intervals:
             logger.warning(f"Не знайдено інтервалів для черги {queue} (очищено: {queue_clean})")
