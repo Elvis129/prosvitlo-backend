@@ -826,6 +826,11 @@ def check_and_notify_announcements():
     from app.services.telegram_service import get_telegram_service
     from app import crud_notifications
     
+    # ⭐ Завантажуємо хеші з БД якщо глобальні змінні порожні (при ручному запуску)
+    if not last_announcement_hashes and not last_sent_paragraphs:
+        logger.info("📥 Завантаження хешів з БД...")
+        load_sent_hashes_from_db()
+    
     db: Session = SessionLocal()
     try:
         logger.info("🔍 Перевіряємо оголошення...")
