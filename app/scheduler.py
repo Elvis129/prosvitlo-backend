@@ -1815,6 +1815,7 @@ def check_upcoming_outages_and_notify():
                     body=body,
                     data={
                         "type": "planned",
+                        "category": "scheduled",
                         "city": outage.city,
                         "street": outage.street,
                         "house_number": house,
@@ -2230,6 +2231,7 @@ def check_tomorrow_schedule_and_notify():
             body=body,
             data={
                 "type": "no_schedule",
+                "category": "general",
                 "date": tomorrow.isoformat()
             }
         )

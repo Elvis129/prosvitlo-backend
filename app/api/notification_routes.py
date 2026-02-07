@@ -337,13 +337,18 @@ async def send_notification(
             addresses=request.addresses
         )
         
+        # Формуємо data з category
+        notification_data = request.data or {}
+        if 'category' not in notification_data:
+            notification_data['category'] = request.category
+        
         # Відправляємо push
         if request.notification_type == "all":
             result = firebase_service.send_to_all_users(
                 db=db,
                 title=request.title,
                 body=request.body,
-                data=request.data
+                data=notification_data
             )
         elif request.notification_type == "tokens" and request.fcm_tokens:
             # Відправляємо на конкретні токени (для тестування)
@@ -356,7 +361,7 @@ async def send_notification(
                         title=request.title,
                         body=request.body
                     ),
-                    data=request.data or {},
+                    data=notification_data,
                     token=token
                 )
                 messages.append(message)
@@ -383,7 +388,7 @@ async def send_notification(
                     house_number=address.get("house_number"),
                     title=request.title,
                     body=request.body,
-                    data=request.data
+                    data=notification_data
                 )
                 total_success += result['success']
                 total_failed += result['failed']
