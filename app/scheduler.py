@@ -219,7 +219,7 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
                     crud_notifications.create_notification(
                         db=db,
                         notification_type="queue",
-                        category="schedule",
+                        category="scheduled",
                         title=title,
                         body=body,
                         device_ids=device_ids
@@ -277,7 +277,7 @@ def send_queue_notification(schedule_date: str, queue: str, start_hour: int, end
             crud_notifications.create_notification(
                 db=db,
                 notification_type="queue",
-                category="schedule",
+                category="scheduled",
                 title=title,
                 body=body,
                 device_ids=device_ids
@@ -1540,10 +1540,12 @@ def send_outage_notification(outage_id: int, outage_type: str):
                 all_device_ids.extend(active_device_ids)
                 
                 # ⭐ ЗБЕРІГАЄМО В ІСТОРІЮ для цього будинку
+                # Мапінг типу на категорію: "planned" → "scheduled"
+                category = "scheduled" if outage_type == "planned" else outage_type
                 crud_notifications.create_notification(
                     db=db,
                     notification_type="address",
-                    category=outage_type,
+                    category=category,
                     title=title,
                     body=body,  # body вже містить правильний будинок
                     addresses=[{
