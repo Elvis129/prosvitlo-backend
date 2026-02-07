@@ -94,7 +94,6 @@ def send_push_notification(
                 payload=messaging.APNSPayload(
                     aps=messaging.Aps(
                         sound='default',
-                        badge=1,
                     ),
                 ),
             ),
@@ -160,7 +159,6 @@ def send_push_to_multiple(
                     payload=messaging.APNSPayload(
                         aps=messaging.Aps(
                             sound='default',
-                            badge=1,
                         ),
                     ),
                 ),
