@@ -73,17 +73,23 @@ app/static/schedules/*.png
 *.tmp
 *.temp
 
-# Test and migration scripts (не комітити)
+# Test and development scripts (не комітити)
 test_*.py
-migrate_*.py
-update_queues.py
-check_images.py
-PUSH_LOGIC_TEST.py
-команди для логів
+check_*.py
+find_*.py
+parse_*.py
+rebuild_*.py
+reset_*.py
+run_migration_*.py
+selenium_*.py
 
-# Documentation (окрім основного README)
-DEPLOY.md
-FIX_BASE_URL.md
-INTERVAL_SETUP.md
-VOLUME_SETUP.md
-FIX_MISSING_IMAGES.md
+# Temporary documentation
+NOTES.md
+INSTRUCTIONS.txt
+BUNDLE_ID_CHECK_RESULTS.md
+TESTING_PLAN.md
+
+# Virtual environments
+venv/
+venv_*/
+.venv/
